@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { DriftItem, DriftSeverity } from '@/lib/types';
+import { DriftCategory, DriftItem, DriftSeverity } from '@/lib/types';
 import { InlineCode } from './InlineCode';
 
 const SEVERITY_STYLE: Record<DriftSeverity, { label: string; dot: string }> = {
@@ -12,6 +12,17 @@ const SEVERITY_STYLE: Record<DriftSeverity, { label: string; dot: string }> = {
   LOW: { label: 'Low', dot: 'bg-muted' },
 };
 const FILTERS: Array<'ALL' | DriftSeverity> = ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+const CATEGORY_LABEL: Record<DriftCategory, string> = {
+  CLI_FLAG: 'CLI flag',
+  FUNCTION_SIGNATURE: 'Function signature',
+  ENV_VARIABLE: 'Environment variable',
+  API_ENDPOINT: 'API endpoint',
+  INSTALL_STEP: 'Setup step',
+  VERSION_MISMATCH: 'Version',
+  DEAD_LINK: 'Link',
+  SECRET_LEAK: 'Secret',
+  LICENSE_MISMATCH: 'License',
+};
 
 const Snippet: React.FC<{ label: string; text: string }> = ({ label, text }) => (
   <div className="min-w-0">
@@ -88,9 +99,13 @@ export const DriftList: React.FC<DriftListProps> = ({ drifts, onResolve }) => {
                   <span className={`block text-sm ${drift.resolved ? 'text-muted line-through' : ''}`}>
                     <InlineCode text={drift.title} />
                   </span>
-                  <span className="mt-0.5 block truncate font-mono text-xs text-muted">
-                    {drift.docFile} {drift.docLineRange}
-                    {drift.codeFile && ` → ${drift.codeFile} ${drift.codeLineRange}`}
+                  <span className="mt-0.5 block truncate text-xs text-muted">
+                    {CATEGORY_LABEL[drift.category] ?? drift.category}
+                    <span className="font-mono">
+                      {' · '}
+                      {drift.docFile} {drift.docLineRange}
+                      {drift.codeFile && ` → ${drift.codeFile} ${drift.codeLineRange}`}
+                    </span>
                   </span>
                 </span>
                 <ChevronDown className={`mt-0.5 h-4 w-4 shrink-0 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -100,7 +115,7 @@ export const DriftList: React.FC<DriftListProps> = ({ drifts, onResolve }) => {
                 <div className="space-y-3 px-4 pb-4 sm:pl-[6.25rem]">
                   <div className="grid gap-3 md:grid-cols-2">
                     <Snippet label="README says" text={drift.docSnippet} />
-                    <Snippet label="Code has" text={drift.codeSnippet} />
+                    <Snippet label={drift.codeFile ? 'Code has' : 'Details'} text={drift.codeSnippet} />
                   </div>
                   {drift.explanation && (
                     <p className="text-sm">

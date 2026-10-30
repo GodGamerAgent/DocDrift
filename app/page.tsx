@@ -125,10 +125,13 @@ export default function ScanPage() {
       <PatchModal
         isOpen={showPatch}
         onClose={closePatch}
-        gitDiff={fix?.gitDiff || ''}
-        fixedReadme={fix?.fixedReadme || ''}
+        originalReadme={fix?.originalReadme || ''}
+        fixedReadme={fix?.fixedReadme || fix?.originalReadme || ''}
+        readmeFile={analysis?.readmeFile || 'README.md'}
         summary={fix?.remediationSummary}
         loading={fixLoading}
+        drifts={analysis?.drifts ?? []}
+        repo={analysis && !analysis.isSample ? analysis.repoName : undefined}
       />
     </div>
   );

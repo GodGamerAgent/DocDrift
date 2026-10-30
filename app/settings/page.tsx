@@ -49,6 +49,7 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [github, setGithub] = useState<{ connected: boolean; login?: string; source?: string; error?: string } | null>(null);
 
   const checkConnection = async () => {
     setTesting(true);
@@ -71,6 +72,10 @@ export default function SettingsPage() {
       })
       .catch(() => setMessage({ kind: 'error', text: 'Could not load settings.' }));
     checkConnection();
+    fetch('/api/github/status')
+      .then((r) => r.json())
+      .then(setGithub)
+      .catch(() => setGithub({ connected: false, error: 'Could not check GitHub login.' }));
   }, []);
 
   if (!settings || !saved || !defaults) {
@@ -132,6 +137,22 @@ export default function SettingsPage() {
       />
       {unit && <span className="hint shrink-0">{unit}</span>}
     </div>
+  );
+
+  const toggle = (key: 'checkCliFlags' | 'checkLinks' | 'checkSecrets' | 'checkLicense', label: string, hint: string) => (
+    <label className="flex cursor-pointer items-start gap-3 sm:col-span-2">
+      <input
+        id={key}
+        type="checkbox"
+        className="mt-0.5 h-4 w-4 accent-fg"
+        checked={settings[key]}
+        onChange={(e) => update(key, e.target.checked)}
+      />
+      <span>
+        <span className="label">{label}</span>
+        <span className="hint mt-0.5 block">{hint}</span>
+      </span>
+    </label>
   );
 
   const engineSelect = (key: 'analysisMode' | 'remediationMode') => (
@@ -266,6 +287,39 @@ export default function SettingsPage() {
           {numberInput('maxFileSizeKb', 'KB')}
         </Field>
       </Section>
+
+      <Section title="Extra checks" description="Rule-based checks that run on every scan, alongside the drift analysis.">
+        {toggle('checkCliFlags', 'CLI flags', 'Removed, renamed, required and undocumented flags, with fixes for the Usage section.')}
+        {toggle('checkLinks', 'Links and badges', 'Dead links, missing files and images, expired Discord invites, failing status badges.')}
+        <Field label="Max external links checked" htmlFor="maxLinksToCheck">
+          {numberInput('maxLinksToCheck', 'links')}
+        </Field>
+        <Field label="Link timeout" htmlFor="linkTimeoutSec">
+          {numberInput('linkTimeoutSec', 'seconds')}
+        </Field>
+        {toggle('checkSecrets', 'Secrets', 'API keys, tokens and private keys pasted into the README.')}
+        {toggle('checkLicense', 'License', 'License named in the README matches the LICENSE file.')}
+      </Section>
+
+      <section className="card p-5">
+        <h2 className="font-medium">GitHub</h2>
+        <p className="hint mt-0.5">Used to open pull requests. DocDrift never stores a token.</p>
+        <div className="mt-4 flex items-center gap-2 rounded-md border border-line bg-bg px-3 py-2.5 text-sm">
+          <span className={`h-2 w-2 shrink-0 rounded-full ${github?.connected ? 'bg-ok' : 'bg-muted/50'}`} />
+          <span>
+            {!github
+              ? 'Checking…'
+              : github.connected
+              ? `Signed in as ${github.login} via ${github.source}`
+              : github.error}
+          </span>
+        </div>
+        <p className="hint mt-2">
+          Uses the <code className="font-mono">GITHUB_TOKEN</code> environment variable if set, otherwise your{' '}
+          <code className="font-mono">gh auth login</code> session. Without push access, the pull request is opened from
+          your fork.
+        </p>
+      </section>
 
       <details className="card p-5 text-sm">
         <summary className="cursor-pointer font-medium">Setting up LM Studio</summary>

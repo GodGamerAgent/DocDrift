@@ -1,4 +1,5 @@
-import { DriftItem } from './types';
+import { DocFix, DriftItem } from './types';
+import { applyFixes } from './applyFixes';
 import { checkLMStudioHealth, queryGemmaLMStudio } from './lmstudio';
 import { Settings } from './settingsSchema';
 
@@ -7,44 +8,37 @@ function stripOuterFence(text: string): string {
   return match ? match[1] : text.trim();
 }
 
-// Rule-based patch: the one drift kind that can be fixed mechanically is an undocumented env var.
+// Fixes a drift can be repaired with mechanically. Model-reported env-var drifts carry
+// no structured fixes, so their `NAME=value` suggestions are turned into Usage-style lines.
+function fixesFor(drift: DriftItem): DocFix[] {
+  if (drift.fixes?.length) return drift.fixes;
+  if (drift.category !== 'ENV_VARIABLE') return [];
+  return drift.suggestedDocFix
+    .split('\n')
+    .map((line) => line.trim().match(/^([A-Z_][A-Z0-9_]*)=/)?.[1])
+    .filter((name): name is string => !!name)
+    .map((name) => ({ type: 'appendToSection' as const, heading: 'Environment Variables', line: `- \`${name}\`` }));
+}
+
 function applyRuleBasedFixes(
   readme: string,
   drifts: DriftItem[],
   modelNote = ''
 ): { fixedReadme: string; summary: string } {
-  const envLines = new Set<string>();
+  let text = readme;
+  let fixed = 0;
   for (const drift of drifts) {
-    if (drift.category !== 'ENV_VARIABLE') continue;
-    for (const line of drift.suggestedDocFix.split('\n')) {
-      const match = line.trim().match(/^([A-Z_][A-Z0-9_]*)=/);
-      if (match && !new RegExp(`\\b${match[1]}\\b`).test(readme)) envLines.add(`${match[1]}=`);
-    }
+    const result = applyFixes(text, fixesFor(drift));
+    if (result.applied > 0) fixed++;
+    text = result.text;
   }
 
-  const manualCount = drifts.filter((d) => d.category !== 'ENV_VARIABLE').length;
-  const manualNote =
-    (manualCount > 0 ? ` ${manualCount} other issue${manualCount === 1 ? ' needs' : 's need'} a manual edit.` : '') + modelNote;
-
-  if (envLines.size === 0) {
+  const manual = drifts.length - fixed;
+  const manualNote = (manual > 0 ? ` ${manual} issue${manual === 1 ? ' needs' : 's need'} a manual edit.` : '') + modelNote;
+  if (fixed === 0) {
     return { fixedReadme: readme, summary: `No automatic patch could be generated.${manualNote}` };
   }
-
-  const section = [
-    '## Environment Variables',
-    '',
-    'The code reads the following environment variables:',
-    '',
-    '```env',
-    ...Array.from(envLines),
-    '```',
-    '',
-  ].join('\n');
-  const fixedReadme = `${readme.replace(/\s*$/, '')}\n\n${section}`;
-  return {
-    fixedReadme,
-    summary: `Documented ${envLines.size} missing environment variable${envLines.size === 1 ? '' : 's'}.${manualNote}`,
-  };
+  return { fixedReadme: text, summary: `Fixed ${fixed} issue${fixed === 1 ? '' : 's'} automatically.${manualNote}` };
 }
 
 export async function remediateReadme(
@@ -88,7 +82,15 @@ export async function remediateReadme(
       const fixedReadme = stripOuterFence(res.content);
       // Guard against truncated or off-task output replacing the whole README
       if (fixedReadme.length >= readme.length * 0.5) {
-        return { fixedReadme: `${fixedReadme}\n`, summary: `README rewritten by ${res.model} to resolve ${drifts.length} drift${drifts.length === 1 ? '' : 's'}.` };
+        // Never trust the model to drop a leaked secret: scrub any that survived the rewrite
+        const scrubbed = applyFixes(
+          `${fixedReadme}\n`,
+          drifts.filter((d) => d.category === 'SECRET_LEAK').flatMap((d) => d.fixes ?? [])
+        ).text;
+        return {
+          fixedReadme: scrubbed,
+          summary: `README rewritten by ${res.model} to resolve ${drifts.length} issue${drifts.length === 1 ? '' : 's'}.`,
+        };
       }
       modelError = 'the model output looked truncated';
     } catch (err: any) {

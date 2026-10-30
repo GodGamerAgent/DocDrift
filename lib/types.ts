@@ -6,7 +6,17 @@ export type DriftCategory =
   | 'ENV_VARIABLE'
   | 'API_ENDPOINT'
   | 'INSTALL_STEP'
-  | 'VERSION_MISMATCH';
+  | 'VERSION_MISMATCH'
+  | 'DEAD_LINK'
+  | 'SECRET_LEAK'
+  | 'LICENSE_MISMATCH';
+
+// Mechanical README edits a rule-based check knows how to make.
+export type DocFix =
+  // Replace `find` with `replace`; `token` matches only whole flag/word tokens
+  | { type: 'replace'; find: string; replace: string; token?: boolean }
+  // Append a line to the `## heading` section, creating the section if missing
+  | { type: 'appendToSection'; heading: string; line: string };
 
 export interface DriftItem {
   id: string;
@@ -22,6 +32,7 @@ export interface DriftItem {
   explanation: string;
   newcomerImpact: string;
   suggestedDocFix: string;
+  fixes?: DocFix[];
   resolved?: boolean;
 }
 

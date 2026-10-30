@@ -5,14 +5,11 @@ import { checkLMStudioHealth, queryGemmaLMStudio } from './lmstudio';
 import { calculateMetrics } from './metrics';
 import { Settings } from './settingsSchema';
 import { SAMPLE_REPOS } from './sampleRepos';
-
-export interface CodeBlockDoc {
-  language: string;
-  code: string;
-  file: string;
-  startLine: number;
-  endLine: number;
-}
+import { CLI_PARSER_PATTERN, CodeFile, MAX_ITEMS_PER_KIND, TEST_PATH, escapeRegExp, findLineNumber, makeDrift } from './checks/common';
+import { auditCliFlags } from './checks/cliFlags';
+import { checkLinks } from './checks/links';
+import { findSecrets } from './checks/secrets';
+import { checkLicense } from './checks/license';
 
 const SEVERITIES: DriftSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 const CATEGORIES: DriftCategory[] = [
@@ -22,26 +19,17 @@ const CATEGORIES: DriftCategory[] = [
   'API_ENDPOINT',
   'INSTALL_STEP',
   'VERSION_MISMATCH',
+  'DEAD_LINK',
+  'SECRET_LEAK',
+  'LICENSE_MISMATCH',
 ];
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.next', 'vendor', 'target', 'venv', '.venv']);
 const LOCK_FILES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'cargo.lock', 'poetry.lock', 'composer.lock']);
-const MAX_HEURISTIC_DRIFTS_PER_KIND = 10;
-
-// Shell code-block languages whose commands may document the project's own CLI.
-const SHELL_LANGS = new Set(['', 'bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'cmd', 'powershell', 'ps1']);
-// Flags passed to these tools belong to the tool, not to the project's CLI.
-const THIRD_PARTY_COMMANDS = new Set([
-  'npm', 'npx', 'yarn', 'pnpm', 'bun', 'pip', 'pip3', 'pipx', 'uv', 'poetry', 'conda', 'git', 'gh', 'docker',
-  'docker-compose', 'podman', 'kubectl', 'helm', 'curl', 'wget', 'brew', 'apt', 'apt-get', 'yum', 'dnf',
-  'cargo', 'rustup', 'go', 'make', 'cd', 'ls', 'cp', 'mv', 'rm', 'mkdir', 'chmod', 'export', 'source', 'echo',
-]);
-const CLI_PARSER_PATTERN = /\.(?:option|requiredOption)\(|add_argument\(|click\.option|@click\.|\bflag\.(?:String|Int|Bool|Duration)\(|\.Flags\(\)|#\[arg|yargs|\bcobra\b|clap::/;
 // Runtime/platform variables that READMEs rarely (and need not) document.
 const IGNORED_ENV_VARS = new Set(['NODE_ENV', 'PATH', 'HOME', 'USER', 'CI', 'PWD', 'TMPDIR', 'SHELL', 'TERM', 'DEBUG', 'LANG', 'NEXT_RUNTIME', 'VERCEL', 'VERCEL_URL', 'VERCEL_ENV', 'GITLAB_CI', 'CIRCLECI', 'TRAVIS', 'BUILDKITE']);
 // Set by CI platforms rather than by contributors
 const CI_ENV_PREFIXES = ['GITHUB_ACTIONS', 'ACTIONS_', 'RUNNER_', 'CI_'];
-const TEST_PATH = /(^|\/)(test|tests|__tests__|spec|specs|fixtures?|examples?)\/|\.(test|spec)\.[a-z]+$/i;
 const ENV_PATTERNS = [
   /process\.env\.([A-Z_][A-Z0-9_]*)/g,
   /process\.env\[['"]([A-Z_][A-Z0-9_]*)['"]\]/g,
@@ -51,50 +39,6 @@ const ENV_PATTERNS = [
   /os\.Getenv\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)/g,
   /env::var\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)/g,
 ];
-
-export function extractMarkdownCodeBlocks(content: string, filePath: string): CodeBlockDoc[] {
-  const blocks: CodeBlockDoc[] = [];
-  const lines = content.split('\n');
-  let inBlock = false;
-  let currentLang = '';
-  let currentCode: string[] = [];
-  let startLine = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.trim().startsWith('```')) {
-      if (!inBlock) {
-        inBlock = true;
-        currentLang = line.trim().replace(/^```/, '').trim();
-        startLine = i + 1;
-        currentCode = [];
-      } else {
-        inBlock = false;
-        blocks.push({
-          language: currentLang,
-          code: currentCode.join('\n'),
-          file: filePath,
-          startLine,
-          endLine: i + 1,
-        });
-      }
-    } else if (inBlock) {
-      currentCode.push(line);
-    }
-  }
-
-  return blocks;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function findLineNumber(content: string, needle: string): number | null {
-  const idx = content.indexOf(needle);
-  if (idx === -1) return null;
-  return content.slice(0, idx).split('\n').length;
-}
 
 // Extracts the JSON array from a model response, tolerating fences or surrounding prose.
 function parseDriftJson(text: string): unknown[] | null {
@@ -144,63 +88,8 @@ function normalizeDrifts(raw: unknown[], readmeFile: string): DriftItem[] {
     });
 }
 
-function detectHeuristicDrifts(
-  readmeContent: string,
-  readmeFile: string,
-  codeFiles: { file: string; content: string }[]
-): DriftItem[] {
-  const drifts: DriftItem[] = [];
-
-  // 1. CLI flags documented in shell snippets that the project's CLI parser does not define
-  const parserFile = codeFiles.find((c) => CLI_PARSER_PATTERN.test(c.content));
-  if (parserFile) {
-    const codeAll = codeFiles.map((c) => c.content).join('\n');
-    const seenFlags = new Set<string>();
-    const blocks = extractMarkdownCodeBlocks(readmeContent, readmeFile).filter((b) =>
-      SHELL_LANGS.has(b.language.toLowerCase())
-    );
-
-    for (const block of blocks) {
-      const lines = block.code.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim().replace(/^\$\s+/, '').replace(/^sudo\s+/, '');
-        if (!line || line.startsWith('#')) continue;
-        const command = line.split(/\s+/)[0];
-        if (THIRD_PARTY_COMMANDS.has(command)) continue;
-
-        for (const match of Array.from(line.matchAll(/(?:^|\s)--([a-zA-Z0-9][a-zA-Z0-9_-]*)/g))) {
-          const flag = match[1];
-          if (['help', 'version', 'verbose'].includes(flag) || seenFlags.has(flag)) continue;
-          seenFlags.add(flag);
-
-          // Commander/argparse/clap spell out `--flag`; Go's flag pkg, click and yargs use the bare quoted name.
-          const defined =
-            codeAll.includes(`--${flag}`) || new RegExp(`["'\`]${escapeRegExp(flag)}["'\`]`).test(codeAll);
-          if (defined || drifts.length >= MAX_HEURISTIC_DRIFTS_PER_KIND) continue;
-
-          const docLine = block.startLine + 1 + i;
-          drifts.push({
-            id: `drift-flag-${flag}`,
-            title: `Documented flag \`--${flag}\` not defined in CLI`,
-            category: 'CLI_FLAG',
-            severity: 'HIGH',
-            docFile: readmeFile,
-            docLineRange: `L${docLine}`,
-            codeFile: parserFile.file,
-            codeLineRange: 'CLI options definition',
-            docSnippet: lines[i].trim(),
-            codeSnippet: `// No definition of --${flag} found in the scanned CLI sources`,
-            explanation: `README instructs contributors to invoke the CLI with \`--${flag}\`, but no CLI option named \`${flag}\` is defined in the scanned code.`,
-            newcomerImpact: `Contributors running this command will likely receive an "unknown option" error.`,
-            suggestedDocFix: `Remove \`--${flag}\` from the README command or replace it with the current option name.`,
-            resolved: false,
-          });
-        }
-      }
-    }
-  }
-
-  // 2. Environment variables read by code but never mentioned in the README
+// Environment variables read by code but never mentioned in the README
+function detectUndocumentedEnvVars(readmeContent: string, readmeFile: string, codeFiles: CodeFile[]): DriftItem[] {
   const envSources = new Map<string, { file: string; line: number | null; snippet: string }>();
   for (const { file, content } of codeFiles) {
     if (TEST_PATH.test(file)) continue;
@@ -216,30 +105,34 @@ function detectHeuristicDrifts(
     }
   }
 
-  let envDrifts = 0;
+  const drifts: DriftItem[] = [];
   for (const [name, source] of Array.from(envSources)) {
     if (new RegExp(`\\b${escapeRegExp(name)}\\b`).test(readmeContent)) continue;
-    if (envDrifts++ >= MAX_HEURISTIC_DRIFTS_PER_KIND) break;
-    drifts.push({
-      id: `drift-env-${name}`,
-      title: `Environment Variable \`${name}\` Missing from README`,
-      category: 'ENV_VARIABLE',
-      severity: 'MEDIUM',
-      docFile: readmeFile,
-      docLineRange: 'Environment Setup',
-      codeFile: source.file,
-      codeLineRange: source.line ? `L${source.line}` : '',
-      docSnippet: '// Not documented in README',
-      codeSnippet: source.snippet,
-      explanation: `Code reads \`${name}\`, but the README never mentions it.`,
-      newcomerImpact: `Contributors won't know to set \`${name}\`; the app may fail on first boot or silently fall back to a default.`,
-      suggestedDocFix: `${name}=<value>`,
-      resolved: false,
-    });
+    if (drifts.length >= MAX_ITEMS_PER_KIND) break;
+    drifts.push(
+      makeDrift({
+        id: `env-${name}`,
+        title: `Environment variable \`${name}\` is missing from the README`,
+        category: 'ENV_VARIABLE',
+        severity: 'MEDIUM',
+        docFile: readmeFile,
+        docLineRange: 'Environment Variables',
+        codeFile: source.file,
+        codeLineRange: source.line ? `L${source.line}` : '',
+        docSnippet: '// Not documented in README',
+        codeSnippet: source.snippet,
+        explanation: `Code reads \`${name}\`, but the README never mentions it.`,
+        newcomerImpact: `Contributors won't know to set \`${name}\`; the app may fail on first boot or silently fall back to a default.`,
+        suggestedDocFix: `${name}=<value>`,
+        fixes: [{ type: 'appendToSection', heading: 'Environment Variables', line: `- \`${name}\`` }],
+      })
+    );
   }
-
   return drifts;
 }
+
+// Flags named in an issue title, e.g. "Flag `--port` was renamed" -> ["--port"]
+const flagsIn = (text: string) => Array.from(text.matchAll(/--[a-zA-Z0-9][\w-]*/g)).map((m) => m[0]);
 
 // Files most likely to define the public surface (CLI, env, routes) go to the model first.
 function codeFilePriority(file: string, content: string): number {
@@ -254,9 +147,9 @@ function codeFilePriority(file: string, content: string): number {
 
 function summarize(drifts: DriftItem[], hasReadme: boolean): string {
   if (!hasReadme) return 'No README found, so there is no documentation to check.';
-  if (drifts.length === 0) return 'The README matches the code. No drift found.';
+  if (drifts.length === 0) return 'The README matches the code. No issues found.';
   const critical = drifts.filter((d) => d.severity === 'CRITICAL').length;
-  return `Found ${drifts.length} place${drifts.length === 1 ? '' : 's'} where the README no longer matches the code${critical ? ` (${critical} critical)` : ''}.`;
+  return `Found ${drifts.length} issue${drifts.length === 1 ? '' : 's'} in the README${critical ? ` (${critical} critical)` : ''}.`;
 }
 
 export async function analyzeLocalDirectory(
@@ -313,7 +206,7 @@ export async function analyzeLocalDirectory(
     }
   }
 
-  const codeFiles: { file: string; content: string }[] = [];
+  const codeFiles: CodeFile[] = [];
   for (const cFile of codeFilesScanned.slice(0, settings.maxCodeFiles)) {
     try {
       const fullPath = path.join(repoPath, cFile);
@@ -323,6 +216,23 @@ export async function analyzeLocalDirectory(
       // skip unreadable files
     }
   }
+
+  // Deterministic checks run on every scan, whichever engine finds the code drift.
+  // Link checking is network-bound, so it runs while the model is thinking.
+  const linkCheck =
+    readmeContent && settings.checkLinks
+      ? checkLinks(readmeContent, readmeFile, repoPath, {
+          maxLinks: settings.maxLinksToCheck,
+          timeoutMs: settings.linkTimeoutSec * 1000,
+        })
+      : Promise.resolve([] as DriftItem[]);
+  const cliDrifts = readmeContent && settings.checkCliFlags ? auditCliFlags(readmeContent, readmeFile, codeFiles) : [];
+  const otherChecks = readmeContent
+    ? [
+        ...(settings.checkSecrets ? findSecrets(readmeContent, readmeFile) : []),
+        ...(settings.checkLicense ? checkLicense(readmeContent, readmeFile, repoPath) : []),
+      ]
+    : [];
 
   let foundDrifts: DriftItem[] | null = null;
   let modelUsed = 'Rule-based checks';
@@ -401,12 +311,24 @@ Return a JSON array of drift items with this exact schema:
     if (settings.analysisMode === 'model') {
       throw new Error(`Model analysis failed: ${modelError?.replace(/\.$/, '')}. Set the analysis engine to Auto in Settings to fall back to rule-based checks.`);
     }
-    foundDrifts = detectHeuristicDrifts(readmeContent, readmeFile, codeFiles);
+    foundDrifts = detectUndocumentedEnvVars(readmeContent, readmeFile, codeFiles);
     if (modelError) {
       modelUsed = 'Rule-based fallback';
       notice = `Model unavailable (${modelError}), so only rule-based checks ran.`;
     }
   }
+
+  // Skip CLI findings the model already reported for the same flag
+  const modelFlags = new Set(foundDrifts.flatMap((d) => flagsIn(`${d.title} ${d.docSnippet}`)));
+  const newCli = cliDrifts.filter((d) => !flagsIn(d.title).some((f) => modelFlags.has(f)));
+
+  const seenIds = new Set<string>();
+  foundDrifts = [...foundDrifts, ...newCli, ...otherChecks, ...(await linkCheck)].map((d) => {
+    let id = d.id;
+    while (seenIds.has(id)) id = `${d.id}-${seenIds.size}`;
+    seenIds.add(id);
+    return id === d.id ? d : { ...d, id };
+  });
 
   return {
     repoName,

@@ -26,9 +26,19 @@ export interface Settings {
   maxScanDepth: number;
   maxCodeFiles: number;
   maxFileSizeKb: number;
+  // Extra checks (run on every scan, whichever engine is selected)
+  checkCliFlags: boolean;
+  checkLinks: boolean;
+  maxLinksToCheck: number;
+  linkTimeoutSec: number;
+  checkSecrets: boolean;
+  checkLicense: boolean;
 }
 
 type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
+type BooleanKey = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings];
+
+export const BOOLEAN_KEYS: BooleanKey[] = ['checkCliFlags', 'checkLinks', 'checkSecrets', 'checkLicense'];
 
 export const NUMBER_LIMITS: Record<NumberKey, { min: number; max: number; step: number }> = {
   requestTimeoutSec: { min: 10, max: 3600, step: 10 },
@@ -43,6 +53,8 @@ export const NUMBER_LIMITS: Record<NumberKey, { min: number; max: number; step: 
   maxScanDepth: { min: 1, max: 20, step: 1 },
   maxCodeFiles: { min: 10, max: 5000, step: 10 },
   maxFileSizeKb: { min: 10, max: 5000, step: 10 },
+  maxLinksToCheck: { min: 0, max: 300, step: 10 },
+  linkTimeoutSec: { min: 2, max: 60, step: 1 },
 };
 
 const MAX_PROMPT_CHARS = 20000;
@@ -67,6 +79,12 @@ export function sanitizeSettings(input: unknown, base: Settings): { settings: Se
     } else {
       settings[key] = key === 'temperature' ? value : Math.round(value);
     }
+  }
+
+  for (const key of BOOLEAN_KEYS) {
+    if (!(key in raw)) continue;
+    if (typeof raw[key] === 'boolean') settings[key] = raw[key] as boolean;
+    else errors.push(`${key} must be true or false`);
   }
 
   if ('lmStudioEndpoint' in raw) {
