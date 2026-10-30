@@ -40,6 +40,7 @@ export interface RepoAnalysisResult {
   repoName: string;
   repoUrl?: string;
   isSample?: boolean;
+  sampleId?: string;
   branch?: string;
   totalFilesScanned: number;
   docsScanned: string[];
@@ -50,6 +51,16 @@ export interface RepoAnalysisResult {
   inferenceMode: 'LM_STUDIO_LIVE' | 'GEMMA_LOCAL_SIMULATOR';
   analyzedAt: string;
   summary: string;
+  // Present for cloned repos so the remediation step can patch the actual README
+  readmeFile?: string;
+  readmeContent?: string;
+}
+
+export interface RemediationResult {
+  originalReadme: string;
+  fixedReadme: string;
+  gitDiff: string;
+  remediationSummary: string;
 }
 
 export interface LMStudioStatus {

@@ -85,7 +85,7 @@ export const LMStudioGuideModal: React.FC<LMStudioGuideModalProps> = ({
               <div>
                 <h4 className="font-semibold text-white">Open LM Studio & Download Gemma</h4>
                 <p className="text-slate-400 mt-0.5 leading-relaxed">
-                  Open <strong>LM Studio</strong> on your Mac. In the search tab, search for <code>gemma-4-12b</code> or <code>gemma-2-9b</code>. Select the <strong>Q4_K_M</strong> (4-bit) quantization (~7.8 GB download, fits perfectly in your 16 GB unified RAM).
+                  Open <strong>LM Studio</strong> on your Mac. In the search tab, search for <code>gemma-4-12b</code> or <code>gemma-2-9b</code>. Select the <strong>Q4_K_M</strong> (4-bit) quantization (~7.8 GB download, fits perfectly in your 16 GB unified RAM). When loading it, set the <strong>context length to 16384 or more</strong> so full drift analyses fit.
                 </p>
               </div>
             </div>

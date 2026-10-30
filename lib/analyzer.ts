@@ -1,7 +1,9 @@
 import fs from 'fs';
 import path from 'path';
-import { DriftItem, RepoAnalysisResult, DocHealthMetrics } from './types';
-import { queryGemmaLMStudio } from './lmstudio';
+import { DriftItem, DriftCategory, DriftSeverity, RepoAnalysisResult } from './types';
+import { checkLMStudioHealth, queryGemmaLMStudio } from './lmstudio';
+import { calculateMetrics } from './metrics';
+import { DRIFT_SYSTEM_PROMPT } from './prompts';
 import { SAMPLE_REPOS } from './sampleRepos';
 
 export interface CodeBlockDoc {
@@ -11,6 +13,46 @@ export interface CodeBlockDoc {
   startLine: number;
   endLine: number;
 }
+
+const SEVERITIES: DriftSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+const CATEGORIES: DriftCategory[] = [
+  'CLI_FLAG',
+  'FUNCTION_SIGNATURE',
+  'ENV_VARIABLE',
+  'API_ENDPOINT',
+  'INSTALL_STEP',
+  'VERSION_MISMATCH',
+];
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.next', 'vendor', 'target', 'venv', '.venv']);
+const LOCK_FILES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'cargo.lock', 'poetry.lock', 'composer.lock']);
+const MAX_CODE_FILES = 300;
+const MAX_CODE_FILE_BYTES = 200_000;
+const MAX_HEURISTIC_DRIFTS_PER_KIND = 10;
+
+// Shell code-block languages whose commands may document the project's own CLI.
+const SHELL_LANGS = new Set(['', 'bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'cmd', 'powershell', 'ps1']);
+// Flags passed to these tools belong to the tool, not to the project's CLI.
+const THIRD_PARTY_COMMANDS = new Set([
+  'npm', 'npx', 'yarn', 'pnpm', 'bun', 'pip', 'pip3', 'pipx', 'uv', 'poetry', 'conda', 'git', 'gh', 'docker',
+  'docker-compose', 'podman', 'kubectl', 'helm', 'curl', 'wget', 'brew', 'apt', 'apt-get', 'yum', 'dnf',
+  'cargo', 'rustup', 'go', 'make', 'cd', 'ls', 'cp', 'mv', 'rm', 'mkdir', 'chmod', 'export', 'source', 'echo',
+]);
+const CLI_PARSER_PATTERN = /\.(?:option|requiredOption)\(|add_argument\(|click\.option|@click\.|\bflag\.(?:String|Int|Bool|Duration)\(|\.Flags\(\)|#\[arg|yargs|\bcobra\b|clap::/;
+// Runtime/platform variables that READMEs rarely (and need not) document.
+const IGNORED_ENV_VARS = new Set(['NODE_ENV', 'PATH', 'HOME', 'USER', 'CI', 'PWD', 'TMPDIR', 'SHELL', 'TERM', 'DEBUG', 'LANG', 'NEXT_RUNTIME', 'VERCEL', 'VERCEL_URL', 'VERCEL_ENV', 'GITLAB_CI', 'CIRCLECI', 'TRAVIS', 'BUILDKITE']);
+// Set by CI platforms rather than by contributors
+const CI_ENV_PREFIXES = ['GITHUB_ACTIONS', 'ACTIONS_', 'RUNNER_', 'CI_'];
+const TEST_PATH = /(^|\/)(test|tests|__tests__|spec|specs|fixtures?|examples?)\/|\.(test|spec)\.[a-z]+$/i;
+const ENV_PATTERNS = [
+  /process\.env\.([A-Z_][A-Z0-9_]*)/g,
+  /process\.env\[['"]([A-Z_][A-Z0-9_]*)['"]\]/g,
+  /os\.environ\[['"]([A-Z_][A-Z0-9_]*)['"]\]/g,
+  /os\.environ\.get\(\s*['"]([A-Z_][A-Z0-9_]*)['"]/g,
+  /os\.getenv\(\s*['"]([A-Z_][A-Z0-9_]*)['"]/g,
+  /os\.Getenv\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)/g,
+  /env::var\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)/g,
+];
 
 export function extractMarkdownCodeBlocks(content: string, filePath: string): CodeBlockDoc[] {
   const blocks: CodeBlockDoc[] = [];
@@ -46,39 +88,170 @@ export function extractMarkdownCodeBlocks(content: string, filePath: string): Co
   return blocks;
 }
 
-export function calculateMetrics(drifts: DriftItem[]): DocHealthMetrics {
-  const criticalCount = drifts.filter((d) => d.severity === 'CRITICAL').length;
-  const highCount = drifts.filter((d) => d.severity === 'HIGH').length;
-  const mediumCount = drifts.filter((d) => d.severity === 'MEDIUM').length;
-  const lowCount = drifts.filter((d) => d.severity === 'LOW').length;
-  const total = drifts.length;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-  // Compute 0-100 score:
-  // Each critical deducts 25 points, high 15 points, medium 8 points, low 3 points
-  let score = 100 - (criticalCount * 25 + highCount * 15 + mediumCount * 8 + lowCount * 3);
-  if (score < 5) score = 5;
-  if (total === 0) score = 100;
+function findLineNumber(content: string, needle: string): number | null {
+  const idx = content.indexOf(needle);
+  if (idx === -1) return null;
+  return content.slice(0, idx).split('\n').length;
+}
 
-  // Contributor onboarding friction in minutes
-  const frictionMin = criticalCount * 45 + highCount * 25 + mediumCount * 10 + 5;
+// Extracts the JSON array from a model response, tolerating fences or surrounding prose.
+function parseDriftJson(text: string): unknown[] | null {
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start === -1 || end < start) return null;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
-  let readiness: 'READY' | 'WARNING' | 'BROKEN' = 'READY';
-  if (criticalCount > 0) {
-    readiness = 'BROKEN';
-  } else if (highCount > 0 || mediumCount > 1) {
-    readiness = 'WARNING';
+// Model output is untrusted: coerce every field so the UI never renders undefined
+// values and every drift has a unique id (ids are React keys and resolve targets).
+function normalizeDrifts(raw: unknown[], readmeFile: string): DriftItem[] {
+  const seen = new Set<string>();
+  const str = (value: unknown, fallback = '') =>
+    typeof value === 'string' ? value : value == null ? fallback : JSON.stringify(value);
+
+  return raw
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+    .map((item, i) => {
+      const severity = str(item.severity).toUpperCase() as DriftSeverity;
+      const category = str(item.category).toUpperCase() as DriftCategory;
+      let id = str(item.id) || `drift-${i + 1}`;
+      while (seen.has(id)) id = `${id}-${i + 1}`;
+      seen.add(id);
+
+      return {
+        id,
+        title: str(item.title, 'Documentation drift'),
+        category: CATEGORIES.includes(category) ? category : 'INSTALL_STEP',
+        severity: SEVERITIES.includes(severity) ? severity : 'MEDIUM',
+        docFile: str(item.docFile, readmeFile),
+        docLineRange: str(item.docLineRange),
+        codeFile: str(item.codeFile),
+        codeLineRange: str(item.codeLineRange),
+        docSnippet: str(item.docSnippet),
+        codeSnippet: str(item.codeSnippet),
+        explanation: str(item.explanation),
+        newcomerImpact: str(item.newcomerImpact),
+        suggestedDocFix: str(item.suggestedDocFix),
+        resolved: false,
+      };
+    });
+}
+
+function detectHeuristicDrifts(
+  readmeContent: string,
+  readmeFile: string,
+  codeFiles: { file: string; content: string }[]
+): DriftItem[] {
+  const drifts: DriftItem[] = [];
+
+  // 1. CLI flags documented in shell snippets that the project's CLI parser does not define
+  const parserFile = codeFiles.find((c) => CLI_PARSER_PATTERN.test(c.content));
+  if (parserFile) {
+    const codeAll = codeFiles.map((c) => c.content).join('\n');
+    const seenFlags = new Set<string>();
+    const blocks = extractMarkdownCodeBlocks(readmeContent, readmeFile).filter((b) =>
+      SHELL_LANGS.has(b.language.toLowerCase())
+    );
+
+    for (const block of blocks) {
+      const lines = block.code.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim().replace(/^\$\s+/, '').replace(/^sudo\s+/, '');
+        if (!line || line.startsWith('#')) continue;
+        const command = line.split(/\s+/)[0];
+        if (THIRD_PARTY_COMMANDS.has(command)) continue;
+
+        for (const match of Array.from(line.matchAll(/(?:^|\s)--([a-zA-Z0-9][a-zA-Z0-9_-]*)/g))) {
+          const flag = match[1];
+          if (['help', 'version', 'verbose'].includes(flag) || seenFlags.has(flag)) continue;
+          seenFlags.add(flag);
+
+          // Commander/argparse/clap spell out `--flag`; Go's flag pkg, click and yargs use the bare quoted name.
+          const defined =
+            codeAll.includes(`--${flag}`) || new RegExp(`["'\`]${escapeRegExp(flag)}["'\`]`).test(codeAll);
+          if (defined || drifts.length >= MAX_HEURISTIC_DRIFTS_PER_KIND) continue;
+
+          const docLine = block.startLine + 1 + i;
+          drifts.push({
+            id: `drift-flag-${flag}`,
+            title: `Documented flag \`--${flag}\` not defined in CLI`,
+            category: 'CLI_FLAG',
+            severity: 'HIGH',
+            docFile: readmeFile,
+            docLineRange: `L${docLine}`,
+            codeFile: parserFile.file,
+            codeLineRange: 'CLI options definition',
+            docSnippet: lines[i].trim(),
+            codeSnippet: `// No definition of --${flag} found in the scanned CLI sources`,
+            explanation: `README instructs contributors to invoke the CLI with \`--${flag}\`, but no CLI option named \`${flag}\` is defined in the scanned code.`,
+            newcomerImpact: `Contributors running this command will likely receive an "unknown option" error.`,
+            suggestedDocFix: `Remove \`--${flag}\` from the README command or replace it with the current option name.`,
+            resolved: false,
+          });
+        }
+      }
+    }
   }
 
-  return {
-    overallScore: score,
-    totalDrifts: total,
-    criticalCount,
-    highCount,
-    mediumCount,
-    lowCount,
-    estimatedOnboardingFrictionMin: frictionMin,
-    readinessForContributors: readiness,
-  };
+  // 2. Environment variables read by code but never mentioned in the README
+  const envSources = new Map<string, { file: string; line: number | null; snippet: string }>();
+  for (const { file, content } of codeFiles) {
+    if (TEST_PATH.test(file)) continue;
+    const isEnvExample = /(^|\/)\.env\.(example|sample|template)$/i.test(file);
+    const patterns = isEnvExample ? [/^([A-Z_][A-Z0-9_]*)=/gm] : ENV_PATTERNS;
+    for (const pattern of patterns) {
+      for (const match of Array.from(content.matchAll(pattern))) {
+        const name = match[1];
+        if (envSources.has(name) || IGNORED_ENV_VARS.has(name)) continue;
+        if (CI_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
+        envSources.set(name, { file, line: findLineNumber(content, match[0]), snippet: match[0] });
+      }
+    }
+  }
+
+  let envDrifts = 0;
+  for (const [name, source] of Array.from(envSources)) {
+    if (new RegExp(`\\b${escapeRegExp(name)}\\b`).test(readmeContent)) continue;
+    if (envDrifts++ >= MAX_HEURISTIC_DRIFTS_PER_KIND) break;
+    drifts.push({
+      id: `drift-env-${name}`,
+      title: `Environment Variable \`${name}\` Missing from README`,
+      category: 'ENV_VARIABLE',
+      severity: 'MEDIUM',
+      docFile: readmeFile,
+      docLineRange: 'Environment Setup',
+      codeFile: source.file,
+      codeLineRange: source.line ? `L${source.line}` : '',
+      docSnippet: '// Not documented in README',
+      codeSnippet: source.snippet,
+      explanation: `Code reads \`${name}\`, but the README never mentions it.`,
+      newcomerImpact: `Contributors won't know to set \`${name}\`; the app may fail on first boot or silently fall back to a default.`,
+      suggestedDocFix: `${name}=<value>`,
+      resolved: false,
+    });
+  }
+
+  return drifts;
+}
+
+// Files most likely to define the public surface (CLI, env, routes) go to the model first.
+function codeFilePriority(file: string, content: string): number {
+  let score = 0;
+  if (CLI_PARSER_PATTERN.test(content)) score += 4;
+  if (ENV_PATTERNS.some((p) => new RegExp(p.source).test(content))) score += 2;
+  if (/\.env\.(example|sample|template)$/i.test(file)) score += 3;
+  if (/(^|\/)(cli|main|index|app|server|routes?)\.[a-z]+$/i.test(file)) score += 2;
+  if (TEST_PATH.test(file)) score -= 3;
+  return score - file.split('/').length * 0.1;
 }
 
 export async function analyzeLocalDirectory(
@@ -88,19 +261,18 @@ export async function analyzeLocalDirectory(
 ): Promise<RepoAnalysisResult> {
   const docsScanned: string[] = [];
   const codeFilesScanned: string[] = [];
-  const foundDrifts: DriftItem[] = [];
 
-  // 1. Gather all files
+  // 1. Gather all files (Dirent.isFile/isDirectory are false for symlinks, so links are never followed)
   function scanDir(dir: string, depth = 0) {
     if (depth > 5) return;
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.name.startsWith('.') && entry.name !== '.env.example') continue;
-        if (['node_modules', '.git', 'dist', 'build', '__pycache__', '.next', 'vendor'].includes(entry.name)) continue;
+        if (entry.name.startsWith('.') && !/^\.env\.(example|sample|template)$/i.test(entry.name)) continue;
+        if (SKIP_DIRS.has(entry.name)) continue;
 
         const fullPath = path.join(dir, entry.name);
-        const relPath = path.relative(repoPath, fullPath);
+        const relPath = path.relative(repoPath, fullPath).split(path.sep).join('/');
 
         if (entry.isDirectory()) {
           scanDir(fullPath, depth + 1);
@@ -108,7 +280,10 @@ export async function analyzeLocalDirectory(
           const lower = entry.name.toLowerCase();
           if (lower.endsWith('.md') || lower === 'readme' || lower.endsWith('.markdown')) {
             docsScanned.push(relPath);
-          } else if (/\.(js|ts|jsx|tsx|py|go|rs|json|sh|env.*)$/.test(lower)) {
+          } else if (
+            !LOCK_FILES.has(lower) &&
+            (/\.(js|mjs|cjs|ts|jsx|tsx|py|go|rs|json|sh)$/.test(lower) || /^\.env\./.test(lower))
+          ) {
             codeFilesScanned.push(relPath);
           }
         }
@@ -120,10 +295,11 @@ export async function analyzeLocalDirectory(
 
   scanDir(repoPath);
 
-  // Read README if exists
+  // Prefer the root README over nested ones (docs/README.md, examples/*/README.md, ...)
   let readmeContent = '';
-  const readmeFile = docsScanned.find((d) => d.toLowerCase().includes('readme')) || docsScanned[0];
-  if (readmeFile) {
+  const readmes = docsScanned.filter((d) => path.basename(d).toLowerCase().startsWith('readme'));
+  const readmeFile = readmes.find((d) => !d.includes('/')) || readmes[0] || docsScanned[0] || 'README.md';
+  if (docsScanned.length > 0) {
     try {
       readmeContent = fs.readFileSync(path.join(repoPath, readmeFile), 'utf-8');
     } catch (e) {
@@ -131,39 +307,44 @@ export async function analyzeLocalDirectory(
     }
   }
 
-  // Scan sample code files for known drift indicators
-  const codeSummaries: { file: string; content: string }[] = [];
-  for (const cFile of codeFilesScanned.slice(0, 8)) {
+  const codeFiles: { file: string; content: string }[] = [];
+  for (const cFile of codeFilesScanned.slice(0, MAX_CODE_FILES)) {
     try {
-      const code = fs.readFileSync(path.join(repoPath, cFile), 'utf-8');
-      codeSummaries.push({ file: cFile, content: code.slice(0, 3000) });
+      const fullPath = path.join(repoPath, cFile);
+      if (fs.statSync(fullPath).size > MAX_CODE_FILE_BYTES) continue;
+      codeFiles.push({ file: cFile, content: fs.readFileSync(fullPath, 'utf-8') });
     } catch (e) {
-      // skip
+      // skip unreadable files
     }
   }
 
-  // Check if LM Studio is reachable to perform live AI drift detection with Gemma
-  let modelUsed = 'Gemma 4 12B (LM Studio)';
-  let inferenceMode: 'LM_STUDIO_LIVE' | 'GEMMA_LOCAL_SIMULATOR' = 'LM_STUDIO_LIVE';
+  let foundDrifts: DriftItem[] | null = null;
+  let modelUsed = 'Rule-based fallback (LM Studio offline)';
+  let inferenceMode: RepoAnalysisResult['inferenceMode'] = 'GEMMA_LOCAL_SIMULATOR';
 
-  try {
-    const prompt = `You are DocDrift, an expert autonomous documentation auditor powered by Google Gemma 4.
-Analyze this repository's documentation and code to identify Documentation Drift (outdated flags, changed API routes, renamed methods, missing env vars, broken quickstart steps).
+  // Live AI drift detection with Gemma when LM Studio is reachable
+  const lmStatus = await checkLMStudioHealth();
+  if (lmStatus.connected && readmeContent) {
+    const promptFiles = [...codeFiles]
+      .sort((a, b) => codeFilePriority(b.file, b.content) - codeFilePriority(a.file, a.content))
+      .slice(0, 8);
 
-README Snippet:
+    const prompt = `Analyze this repository's documentation and code to identify Documentation Drift (outdated flags, changed API routes, renamed methods, missing env vars, broken quickstart steps).
+
+README (${readmeFile}):
 ${readmeContent.slice(0, 3500)}
 
 Codebase Snippets:
-${codeSummaries.map((c) => `--- File: ${c.file} ---\n${c.content.slice(0, 1500)}`).join('\n\n')}
+${promptFiles.map((c) => `--- File: ${c.file} ---\n${c.content.slice(0, 1500)}`).join('\n\n')}
 
 Return a JSON array of drift items with this exact schema:
 [
   {
     "id": "drift-1",
     "title": "Short title describing the drift",
-    "category": "CLI_FLAG | FUNCTION_SIGNATURE | ENV_VARIABLE | API_ENDPOINT | INSTALL_STEP",
+    "category": "CLI_FLAG | FUNCTION_SIGNATURE | ENV_VARIABLE | API_ENDPOINT | INSTALL_STEP | VERSION_MISMATCH",
     "severity": "CRITICAL | HIGH | MEDIUM | LOW",
-    "docFile": "README.md",
+    "docFile": "${readmeFile}",
     "docLineRange": "L10-L15",
     "codeFile": "path/to/code.ts",
     "codeLineRange": "L20-L25",
@@ -171,96 +352,47 @@ Return a JSON array of drift items with this exact schema:
     "codeSnippet": "actual current code signature or definition",
     "explanation": "why this is drifted and what changed in code",
     "newcomerImpact": "how a new contributor or user will fail if they follow the docs",
-    "suggestedDocFix": "the exact corrected instruction"
+    "suggestedDocFix": "the exact corrected instruction (for ENV_VARIABLE drifts: NAME=<value> lines)"
   }
 ]
 `;
 
-    const gemmaResponse = await queryGemmaLMStudio({
-      messages: [
-        {
-          role: 'system',
-          content: 'You are Google Gemma 4 12B running on LM Studio. You find documentation drift between code and docs. Return pure JSON array only.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.1,
-    });
+    try {
+      const gemmaResponse = await queryGemmaLMStudio({
+        model: lmStatus.model,
+        messages: [
+          { role: 'system', content: DRIFT_SYSTEM_PROMPT },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.1,
+        maxTokens: 4000,
+      });
 
-    // Try parsing JSON from Gemma
-    const rawText = gemmaResponse.content.trim();
-    const jsonMatch = rawText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        foundDrifts.push(...parsed);
+      const parsed = parseDriftJson(gemmaResponse.content);
+      if (parsed) {
+        foundDrifts = normalizeDrifts(parsed, readmeFile);
+        inferenceMode = 'LM_STUDIO_LIVE';
+        modelUsed = `${gemmaResponse.model} (LM Studio)`;
+      } else {
+        console.warn('[DocDrift] Model response was not a JSON array; using rule-based fallback.');
       }
-    }
-  } catch (err) {
-    // If LM Studio is not active or failed, use our comprehensive AST & heuristic detector
-    // to detect real drifts in cloned or local code!
-    inferenceMode = 'GEMMA_LOCAL_SIMULATOR';
-    modelUsed = 'Gemma 4 12B (Local Reasoner)';
-
-    // Rule-based heuristic drift detection
-    const codeAll = codeSummaries.map((c) => c.content).join('\n');
-
-    // 1. Check CLI flags
-    const readmeFlags = Array.from(readmeContent.matchAll(/--([a-zA-Z0-9_-]+)/g)).map((m) => m[1]);
-    for (const flag of readmeFlags) {
-      if (['help', 'version', 'verbose'].includes(flag)) continue;
-      // If code explicitly removes or changes this flag
-      if (codeAll.includes(`options.${flag}`) === false && (codeAll.includes('option(') || codeAll.includes('add_argument('))) {
-        foundDrifts.push({
-          id: `drift-flag-${flag}`,
-          title: `Documented flag \`--${flag}\` not supported in CLI`,
-          category: 'CLI_FLAG',
-          severity: 'HIGH',
-          docFile: readmeFile || 'README.md',
-          docLineRange: 'Quickstart Section',
-          codeFile: codeSummaries[0]?.file || 'src/cli.ts',
-          codeLineRange: 'CLI Options definition',
-          docSnippet: `--${flag}`,
-          codeSnippet: '// Option removed or modified in current CLI parser',
-          explanation: `README instructs contributors to invoke with \`--${flag}\`, but current code options do not support this parameter.`,
-          newcomerImpact: `Contributors running the quickstart will receive an "unknown option" error.`,
-          suggestedDocFix: `Update README command to remove \`--${flag}\` or use the modern equivalent.`,
-        });
-      }
-    }
-
-    // 2. Check environment variables
-    const readmeEnvVars = Array.from(readmeContent.matchAll(/([A-Z_]{3,}[A-Z0-9_]*)=/g)).map((m) => m[1]);
-    const codeEnvVars = Array.from(codeAll.matchAll(/process\.env\.([A-Z_]{3,}[A-Z0-9_]*)|os\.environ\[['"]([A-Z_]+)['"]\]/g))
-      .map((m) => m[1] || m[2])
-      .filter(Boolean);
-
-    for (const cEnv of Array.from(new Set(codeEnvVars))) {
-      if (!readmeEnvVars.includes(cEnv) && !readmeContent.includes(cEnv)) {
-        foundDrifts.push({
-          id: `drift-env-${cEnv}`,
-          title: `Required Environment Variable \`${cEnv}\` Missing from README`,
-          category: 'ENV_VARIABLE',
-          severity: 'HIGH',
-          docFile: readmeFile || 'README.md',
-          docLineRange: 'Environment Setup',
-          codeFile: codeSummaries[0]?.file || '.env.example',
-          codeLineRange: 'Configuration block',
-          docSnippet: '// Not documented in README.md',
-          codeSnippet: `process.env.${cEnv}`,
-          explanation: `Code accesses \`${cEnv}\`, but it is completely omitted in the documentation.`,
-          newcomerImpact: `App fails on first boot with missing configuration or runtime undefined errors.`,
-          suggestedDocFix: `Add \`${cEnv}=your_value_here\` to the README setup instructions.`,
-        });
-      }
+    } catch (err) {
+      // Fall through to the rule-based detector below
     }
   }
 
-  // If none detected or sample matched, ensure realistic output
+  if (!foundDrifts) {
+    foundDrifts = detectHeuristicDrifts(readmeContent, readmeFile, codeFiles);
+    if (lmStatus.connected) modelUsed = 'Rule-based fallback (model response unusable)';
+  }
+
   const metrics = calculateMetrics(foundDrifts);
+  let summary = 'Documentation is in sync with codebase! No major drift detected.';
+  if (!readmeContent) {
+    summary = 'No README found in this repository, so there is no documentation to check for drift.';
+  } else if (foundDrifts.length > 0) {
+    summary = `Found ${foundDrifts.length} documentation drift${foundDrifts.length === 1 ? '' : 's'} (${metrics.criticalCount} critical). New contributors following the README are likely to hit setup failures.`;
+  }
 
   return {
     repoName,
@@ -274,52 +406,34 @@ Return a JSON array of drift items with this exact schema:
     modelUsed,
     inferenceMode,
     analyzedAt: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    summary: foundDrifts.length > 0 
-      ? `Found ${foundDrifts.length} documentation drifts (${metrics.criticalCount} critical). New contributors are guaranteed to encounter setup failures.`
-      : `Documentation is in sync with codebase! No major drift detected.`,
+    summary,
+    readmeFile: readmeContent ? readmeFile : undefined,
+    readmeContent: readmeContent || undefined,
   };
 }
 
 export async function analyzeSampleRepo(sampleId: string): Promise<RepoAnalysisResult> {
   const sample = SAMPLE_REPOS[sampleId] || SAMPLE_REPOS['deployx-cli'];
-  
+
   // Calculate realistic metrics
   const metrics = calculateMetrics(sample.expectedDrifts);
 
-  // Check if LM Studio is actually running so we can enrich or use it
-  let modelUsed = 'Gemma 4 12B (LM Studio)';
-  let inferenceMode: 'LM_STUDIO_LIVE' | 'GEMMA_LOCAL_SIMULATOR' = 'GEMMA_LOCAL_SIMULATOR';
-
-  try {
-    const res = await queryGemmaLMStudio({
-      messages: [
-        { role: 'system', content: 'You are Gemma 4 12B. Acknowledge drift inspection.' },
-        { role: 'user', content: 'Ping' }
-      ],
-      maxTokens: 5
-    });
-    if (res.source === 'LM_STUDIO_LIVE') {
-      inferenceMode = 'LM_STUDIO_LIVE';
-      modelUsed = `Gemma 4 12B (${res.model || 'LM Studio'})`;
-    }
-  } catch (e) {
-    // Keep local simulator
-    inferenceMode = 'GEMMA_LOCAL_SIMULATOR';
-    modelUsed = 'Gemma 4 12B (LM Studio Ready)';
-  }
+  // Showcase drifts are precomputed; report whether a live model is available
+  const lmStatus = await checkLMStudioHealth();
 
   return {
     repoName: sample.name,
     repoUrl: `https://github.com/${sample.name}`,
     isSample: true,
+    sampleId: sample.id,
     totalFilesScanned: 1 + Object.keys(sample.codeFiles).length,
     docsScanned: ['README.md'],
     codeFilesScanned: Object.keys(sample.codeFiles),
     metrics,
     drifts: sample.expectedDrifts,
-    modelUsed,
-    inferenceMode,
+    modelUsed: lmStatus.connected ? `${lmStatus.model} (LM Studio)` : 'Gemma 4 12B (showcase, LM Studio offline)',
+    inferenceMode: lmStatus.connected ? 'LM_STUDIO_LIVE' : 'GEMMA_LOCAL_SIMULATOR',
     analyzedAt: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    summary: `Detected ${sample.expectedDrifts.length} drift points across CLI arguments and configuration. Onboarding a new contributor currently takes ~${metrics.estimatedOnboardingFrictionMin} min of troubleshooting.`,
+    summary: `Detected ${sample.expectedDrifts.length} drift points (${metrics.criticalCount} critical). Onboarding a new contributor currently takes ~${metrics.estimatedOnboardingFrictionMin} min of troubleshooting.`,
   };
 }

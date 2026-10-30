@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import { checkLMStudioHealth } from '@/lib/lmstudio';
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const endpoint = searchParams.get('endpoint') || undefined;
+// Without this, Next would prerender the status once at build time.
+export const dynamic = 'force-dynamic';
 
-  const status = await checkLMStudioHealth(endpoint);
+// The endpoint is server-configured (LMSTUDIO_ENDPOINT) rather than a query param,
+// so this route can't be used to make the server fetch arbitrary URLs.
+export async function GET() {
+  const status = await checkLMStudioHealth();
   return NextResponse.json(status);
 }

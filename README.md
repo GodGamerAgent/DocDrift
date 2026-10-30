@@ -22,7 +22,7 @@ New contributors arrive, follow outdated instructions, run into crashes (`error:
 
 ## ✨ Features
 - 🔍 **Automated GitHub Cloner**: Shallow-clones any public GitHub repository (`git clone --depth 1`) or tests instantly with 3 built-in real-world drift scenarios.
-- 🧠 **Google Gemma 4 (12B) Core**: Performs semantic AST analysis to pinpoint broken CLI flags, altered API routes, changed function signatures, and missing environment variables.
+- 🧠 **Google Gemma 4 (12B) Core**: Semantically compares README instructions against source code to pinpoint broken CLI flags, altered API routes, changed function signatures, and missing environment variables.
 - 📊 **Documentation Health Score**: Real-time 0–100% health metric with visual gauge, severity breakdowns (Critical, High, Medium), and newcomer friction calculations.
 - ⚡ **1-Click PR Remediation**: Gemma 4 generates the exact unified git patch (`.diff`) and updated `README.md` ready to commit or copy.
 - 💻 **Optimized for Mac M5 (16GB RAM)**: Leverages Apple Silicon Metal acceleration via LM Studio (`http://localhost:1234/v1`).
@@ -57,25 +57,29 @@ New contributors arrive, follow outdated instructions, run into crashes (`error:
 ## 🚀 Quickstart for Local Development
 
 ### Prerequisites
-- Node.js (v18+)
+- Node.js (v18.17+)
+- Git (used to shallow-clone repositories)
 - LM Studio (with `gemma-4-12b` or `gemma-2-9b` downloaded)
 
 ### 1. Clone & Install
-\`\`\`bash
+```bash
 git clone <your-repo-url>
 cd DocDrift
 npm install
-\`\`\`
+```
 
 ### 2. Start LM Studio Server
 1. Open LM Studio on your Mac M5.
 2. Search and download `gemma-4-12b` (4-bit quantization).
 3. Switch to the **Local Server** (`<->`) tab, select the Gemma model, and click **Start Server** on port `1234`.
+4. When loading the model, set its **context length to at least 16384** tokens. Drift analysis sends a ~4k-token prompt, and reasoning-tuned Gemma builds can spend several thousand more tokens thinking; at LM Studio's smaller defaults the request fails with "Context size has been exceeded" and DocDrift falls back to its rule-based detector.
+
+If LM Studio runs on a different host or port, set `LMSTUDIO_ENDPOINT` before starting DocDrift (e.g. `LMSTUDIO_ENDPOINT=http://localhost:5678/v1 npm run dev`). Model calls time out after 5 minutes by default; raise `LMSTUDIO_TIMEOUT_MS` on slower machines.
 
 ### 3. Launch DocDrift Web App
-\`\`\`bash
+```bash
 npm run dev
-\`\`\`
+```
 Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 ---

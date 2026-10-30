@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
@@ -7,76 +7,96 @@ import os from 'os';
 import { analyzeLocalDirectory, analyzeSampleRepo } from '@/lib/analyzer';
 import { SAMPLE_REPOS } from '@/lib/sampleRepos';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const GITHUB_NAME = /^[A-Za-z0-9_.-]+$/;
+
+// Accepts https://github.com/owner/repo (optionally with .git, a trailing path like /tree/main,
+// or no scheme) and rebuilds a canonical clone URL so nothing user-controlled reaches git verbatim.
+function parseGitHubUrl(input: string): { cloneUrl: string; repoName: string } | null {
+  let raw = input.trim();
+  if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (!['github.com', 'www.github.com'].includes(url.hostname.toLowerCase())) return null;
+  if (url.username || url.password || url.port) return null;
+
+  const [owner, rawRepo] = url.pathname.split('/').filter(Boolean);
+  const repo = rawRepo?.replace(/\.git$/, '');
+  if (!owner || !repo) return null;
+  if (![owner, repo].every((part) => GITHUB_NAME.test(part) && !/^\.+$/.test(part))) return null;
+
+  return { cloneUrl: `https://github.com/${owner}/${repo}.git`, repoName: `${owner}/${repo}` };
+}
 
 export async function POST(request: Request) {
+  let body: any;
   try {
-    const body = await request.json();
-    const { repoUrl, sampleId } = body;
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Request body must be JSON' }, { status: 400 });
+  }
+
+  try {
+    const { repoUrl, sampleId } = body ?? {};
 
     // 1. If sample repo requested
-    if (sampleId && SAMPLE_REPOS[sampleId]) {
+    if (sampleId !== undefined) {
+      if (typeof sampleId !== 'string' || !SAMPLE_REPOS[sampleId]) {
+        return NextResponse.json({ error: `Unknown sample repository: ${String(sampleId)}` }, { status: 400 });
+      }
       const result = await analyzeSampleRepo(sampleId);
       return NextResponse.json(result);
     }
 
     // 2. If GitHub URL requested
-    if (repoUrl && typeof repoUrl === 'string') {
-      const trimmedUrl = repoUrl.trim();
-
-      // Quick validation
-      if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://') && !trimmedUrl.includes('github.com')) {
-        return NextResponse.json(
-          { error: 'Invalid URL. Please enter a valid public GitHub repository URL (e.g., https://github.com/expressjs/express).' },
-          { status: 400 }
-        );
-      }
-
-      // Extract repo name
-      const parts = trimmedUrl.replace(/\.git$/, '').split('/');
-      const repoName = parts.length >= 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : 'cloned-repository';
-
-      // Create isolated temporary directory
-      const tempBase = path.join(os.tmpdir(), 'docdrift_clones');
-      if (!fs.existsSync(tempBase)) {
-        fs.mkdirSync(tempBase, { recursive: true });
-      }
-
-      const cloneDir = path.join(tempBase, `repo_${Date.now()}_${Math.random().toString(36).substring(7)}`);
-
-      try {
-        // Run shallow git clone with 20 second timeout
-        console.log(`[DocDrift] Cloning ${trimmedUrl} into ${cloneDir}...`);
-        await execAsync(`git clone --depth 1 --single-branch "${trimmedUrl}" "${cloneDir}"`, {
-          timeout: 25000,
-        });
-
-        const result = await analyzeLocalDirectory(cloneDir, repoName, trimmedUrl);
-
-        // Cleanup cloned files asynchronously in background to free disk
-        setTimeout(() => {
-          try {
-            fs.rmSync(cloneDir, { recursive: true, force: true });
-          } catch (e) {
-            // ignore
-          }
-        }, 15000);
-
-        return NextResponse.json(result);
-      } catch (cloneErr: any) {
-        console.error('Git clone failed:', cloneErr);
-        return NextResponse.json(
-          {
-            error: `Failed to clone repository: ${cloneErr.message || 'Clone timed out or repo is private/unavailable'}. Try one of the built-in showcase repos!`,
-          },
-          { status: 500 }
-        );
-      }
+    if (typeof repoUrl !== 'string' || !repoUrl.trim()) {
+      return NextResponse.json({ error: 'Provide a repoUrl or sampleId.' }, { status: 400 });
     }
 
-    // Default fallback to first sample repo
-    const defaultResult = await analyzeSampleRepo('deployx-cli');
-    return NextResponse.json(defaultResult);
+    const parsed = parseGitHubUrl(repoUrl);
+    if (!parsed) {
+      return NextResponse.json(
+        { error: 'Invalid URL. Please enter a valid public GitHub repository URL (e.g., https://github.com/expressjs/express).' },
+        { status: 400 }
+      );
+    }
+
+    // Create isolated temporary directory
+    const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docdrift-'));
+
+    try {
+      console.log(`[DocDrift] Cloning ${parsed.cloneUrl} into ${cloneDir}...`);
+      try {
+        // execFile (no shell) + `--` keeps the URL from being interpreted as a command or git option.
+        // GIT_TERMINAL_PROMPT=0 makes private repos fail fast instead of waiting for credentials.
+        await execFileAsync(
+          'git',
+          ['clone', '--depth', '1', '--single-branch', '--no-tags', '--', parsed.cloneUrl, cloneDir],
+          { timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+        );
+      } catch (cloneErr: any) {
+        console.error('Git clone failed:', cloneErr.stderr || cloneErr.message);
+        const reason = cloneErr.killed
+          ? 'the clone timed out'
+          : /not found|could not read Username|Authentication failed/i.test(cloneErr.stderr || '')
+          ? 'the repository is private or does not exist'
+          : 'git could not fetch it';
+        return NextResponse.json(
+          { error: `Failed to clone ${parsed.repoName}: ${reason}. Try one of the built-in showcase repos!` },
+          { status: 502 }
+        );
+      }
+
+      const result = await analyzeLocalDirectory(cloneDir, parsed.repoName, `https://github.com/${parsed.repoName}`);
+      return NextResponse.json(result);
+    } finally {
+      fs.promises.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
+    }
   } catch (err: any) {
     console.error('Scan API error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, Check, Copy, Download, GitPullRequest, Sparkles, CheckCircle2 } from 'lucide-react';
+import { X, Check, Copy, Download, GitPullRequest, Sparkles, Loader2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface RemediationModalProps {
@@ -9,6 +9,8 @@ interface RemediationModalProps {
   onClose: () => void;
   gitDiff: string;
   fixedReadme: string;
+  summary?: string;
+  loading?: boolean;
   onApplyMerge: () => void;
 }
 
@@ -17,6 +19,8 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
   onClose,
   gitDiff,
   fixedReadme,
+  summary,
+  loading = false,
   onApplyMerge,
 }) => {
   const [copied, setCopied] = useState(false);
@@ -24,10 +28,16 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleCopyDiff = () => {
-    navigator.clipboard.writeText(gitDiff);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const hasPatch = gitDiff.length > 0;
+
+  const handleCopyDiff = async () => {
+    try {
+      await navigator.clipboard.writeText(gitDiff);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      console.warn('Clipboard write failed:', e);
+    }
   };
 
   const handleDownloadReadme = () => {
@@ -37,7 +47,8 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
     a.href = url;
     a.download = 'README_REMEDIATED.md';
     a.click();
-    URL.revokeObjectURL(url);
+    // Revoking synchronously can cancel the download in some browsers
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleSimulateMerge = () => {
@@ -67,12 +78,14 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
             <div>
               <h3 className="text-lg font-bold text-white flex items-center space-x-2">
                 <span>Gemma 4 Remediation PR Patch</span>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Ready to Commit
-                </span>
+                {hasPatch && (
+                  <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    Ready to Commit
+                  </span>
+                )}
               </h3>
               <p className="text-xs text-slate-400">
-                Synchronized all outdated flags, API routes, and environment variables.
+                {loading ? 'Generating patch…' : summary || 'No patch available for this repository.'}
               </p>
             </div>
           </div>
@@ -109,7 +122,8 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
           <div className="flex items-center space-x-2">
             <button
               onClick={handleCopyDiff}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-mono transition"
+              disabled={!hasPatch}
+              className="disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-mono transition"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
               <span>{copied ? 'Copied Patch' : 'Copy Patch'}</span>
@@ -117,7 +131,8 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
 
             <button
               onClick={handleDownloadReadme}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-mono transition"
+              disabled={!hasPatch}
+              className="disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-mono transition"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Download README</span>
@@ -127,7 +142,16 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
 
         {/* Content Body */}
         <div className="p-6 overflow-y-auto flex-1 font-mono text-xs max-h-[50vh] bg-black/40">
-          {activeTab === 'DIFF' ? (
+          {loading ? (
+            <div className="flex items-center justify-center space-x-2 py-12 text-slate-400">
+              <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+              <span>Generating remediation patch…</span>
+            </div>
+          ) : !hasPatch ? (
+            <div className="py-12 text-center text-slate-400">
+              No automatic README changes were generated for this scan.
+            </div>
+          ) : activeTab === 'DIFF' ? (
             <div className="space-y-0.5 select-text">
               {diffLines.map((line, idx) => {
                 let lineClass = 'text-slate-400';
@@ -168,7 +192,11 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
         {/* Modal Footer */}
         <div className="p-5 border-t border-slate-800 bg-slate-900/80 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-xs text-slate-400">
-            Fix generated by <span className="text-blue-400 font-semibold">Google Gemma 4 (12B)</span> via AST cross-check.
+            {hasPatch && (
+              <>
+                Fix generated by <span className="text-blue-400 font-semibold">DocDrift</span> from the detected drifts.
+              </>
+            )}
           </div>
 
           <div className="flex items-center space-x-3 w-full sm:w-auto justify-end">
@@ -181,7 +209,8 @@ export const RemediationModal: React.FC<RemediationModalProps> = ({
 
             <button
               onClick={handleSimulateMerge}
-              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-medium text-xs font-mono flex items-center space-x-2 shadow-lg shadow-emerald-600/25 transition cursor-pointer"
+              disabled={!hasPatch}
+              className="disabled:opacity-40 disabled:cursor-not-allowed px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-medium text-xs font-mono flex items-center space-x-2 shadow-lg shadow-emerald-600/25 transition cursor-pointer"
             >
               <GitPullRequest className="w-4 h-4" />
               <span>Simulate Merge PR (100% Score)</span>

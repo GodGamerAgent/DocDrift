@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { X, Sparkles, Terminal, Cpu, Database, CheckCircle, ShieldCheck } from 'lucide-react';
+import { DRIFT_SYSTEM_PROMPT } from '@/lib/prompts';
 
 interface GemmaInspectorModalProps {
   isOpen: boolean;
@@ -87,13 +88,7 @@ export const GemmaInspectorModal: React.FC<GemmaInspectorModalProps> = ({
                   <span>1. System Prompt (LM Studio API endpoint: POST /v1/chat/completions)</span>
                 </div>
                 <pre className="text-blue-300 whitespace-pre-wrap text-[11px] bg-black/40 p-3 rounded-lg border border-blue-500/10">
-{`You are Google Gemma 4 12B running locally via LM Studio.
-Your role: Act as an autonomous Documentation Auditor & Diff Engine.
-You cross-examine Markdown documentation code snippets against actual AST signatures:
-- Identify removed or deprecated CLI flags
-- Identify altered API routes and missing required HTTP headers
-- Spot missing environment variables from .env.example
-- Compute severity (CRITICAL, HIGH, MEDIUM) based on whether it breaks the quickstart.`}
+{DRIFT_SYSTEM_PROMPT}
                 </pre>
               </div>
 
@@ -103,7 +98,7 @@ You cross-examine Markdown documentation code snippets against actual AST signat
                   <span>2. Context Payload Injected to Gemma 4</span>
                 </div>
                 <div className="text-slate-300 text-[11px] font-sans leading-relaxed">
-                  Instead of feeding entire multi-megabyte repos, DocDrift parses the AST of entrypoints (`cli.ts`, `app.py`, `routes.py`, `.env.example`, `package.json`) and pairs each with extracted Markdown code blocks. Gemma receives a concise ~2,500 token prompt and outputs a structured JSON analysis.
+                  Instead of feeding entire multi-megabyte repos, DocDrift ranks source files by how likely they are to define the public surface (CLI option parsers, environment reads, entrypoints, routes, <code>.env.example</code>) and sends the README plus the top 8 files, each trimmed to ~1,500 characters. Gemma receives a concise prompt and returns a structured JSON analysis, which DocDrift validates before display.
                 </div>
               </div>
             </div>
@@ -155,7 +150,7 @@ You cross-examine Markdown documentation code snippets against actual AST signat
                   </li>
                   <li className="flex items-start space-x-2">
                     <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <span><strong>100% Open-Source</strong> — Released under Apache 2.0 / MIT license on GitHub.</span>
+                    <span><strong>100% Open-Source</strong> — Released under the Apache 2.0 license on GitHub.</span>
                   </li>
                   <li className="flex items-start space-x-2">
                     <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Search, GitBranch, ArrowRight, Terminal, Zap, Shield, Eye, Loader2 } from 'lucide-react';
+import { GitBranch, ArrowRight, Terminal, Zap, Shield, Eye, Loader2 } from 'lucide-react';
 import { SAMPLE_REPOS } from '@/lib/sampleRepos';
 
 interface HeroClonerProps {
@@ -69,7 +69,7 @@ export const HeroCloner: React.FC<HeroClonerProps> = ({
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Cloning...</span>
+                <span>Analyzing...</span>
               </>
             ) : (
               <>
@@ -99,7 +99,7 @@ export const HeroCloner: React.FC<HeroClonerProps> = ({
             <Terminal className="w-3.5 h-3.5 text-blue-400" />
             <span>deployx-cli (CLI Flag Drift)</span>
             <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-sans">
-              4 Drifts
+              {SAMPLE_REPOS['deployx-cli'].expectedDrifts.length} Drifts
             </span>
           </button>
 
@@ -114,7 +114,7 @@ export const HeroCloner: React.FC<HeroClonerProps> = ({
             <Shield className="w-3.5 h-3.5 text-indigo-400" />
             <span>nexus-auth-service (API & Route Drift)</span>
             <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-sans">
-              4 Drifts
+              {SAMPLE_REPOS['nexus-auth-api'].expectedDrifts.length} Drifts
             </span>
           </button>
 
@@ -129,7 +129,7 @@ export const HeroCloner: React.FC<HeroClonerProps> = ({
             <Eye className="w-3.5 h-3.5 text-cyan-400" />
             <span>vision-core (Python Method Drift)</span>
             <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-sans">
-              2 Drifts
+              {SAMPLE_REPOS['vision-core-ai'].expectedDrifts.length} Drifts
             </span>
           </button>
 

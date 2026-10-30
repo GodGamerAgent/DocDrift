@@ -2,19 +2,7 @@
 
 import React, { useState } from 'react';
 import { DriftItem, DriftSeverity, DriftCategory } from '@/lib/types';
-import { 
-  AlertCircle, 
-  Terminal, 
-  Code2, 
-  FileText, 
-  Key, 
-  Network, 
-  Check, 
-  Sparkles, 
-  ExternalLink,
-  ChevronRight,
-  Filter
-} from 'lucide-react';
+import { Terminal, Code2, FileText, Key, Network, Check, Sparkles } from 'lucide-react';
 
 interface DriftListProps {
   drifts: DriftItem[];
@@ -58,6 +46,7 @@ export const DriftList: React.FC<DriftListProps> = ({
       case 'MEDIUM':
         return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
       case 'LOW':
+      default:
         return 'bg-blue-500/10 text-blue-400 border-blue-500/30';
     }
   };
@@ -81,7 +70,7 @@ export const DriftList: React.FC<DriftListProps> = ({
 
         {/* Severity Filter Tabs */}
         <div className="flex items-center space-x-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono">
-          {['ALL', 'CRITICAL', 'HIGH', 'MEDIUM'].map((sev) => (
+          {['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((sev) => (
             <button
               key={sev}
               onClick={() => setFilterSeverity(sev)}
@@ -99,6 +88,11 @@ export const DriftList: React.FC<DriftListProps> = ({
 
       {/* Drift Cards Grid */}
       <div className="space-y-4">
+        {filteredDrifts.length === 0 && (
+          <div className="glass-panel rounded-2xl p-6 border border-slate-800/80 text-center text-sm text-slate-400">
+            {drifts.length === 0 ? 'No documentation drift detected.' : `No ${filterSeverity} severity drift.`}
+          </div>
+        )}
         {filteredDrifts.map((drift) => {
           const isResolved = drift.resolved;
 

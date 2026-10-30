@@ -1,4 +1,4 @@
-import { DriftItem, RepoAnalysisResult } from './types';
+import { DriftItem } from './types';
 
 export interface SampleRepo {
   id: string;
@@ -7,6 +7,8 @@ export interface SampleRepo {
   techStack: string;
   tags: string[];
   readmeContent: string;
+  // README after applying every expected drift fix (used for the remediation diff)
+  fixedReadmeContent: string;
   codeFiles: Record<string, string>;
   expectedDrifts: DriftItem[];
 }
@@ -43,6 +45,33 @@ export DEPLOYX_TOKEN="dx_live_99214"
 ### Local Development Preview
 \`\`\`bash
 deployx preview --local-port 3000
+\`\`\`
+`,
+    fixedReadmeContent: `# DeployX CLI 🚀
+The ultra-fast zero-configuration multi-cloud deployment agent.
+
+## Quickstart
+
+Install the CLI tool:
+\`\`\`bash
+npm install -g deployx-cli
+\`\`\`
+
+### Deploying a Service
+Run the following command from your root directory:
+\`\`\`bash
+deployx push --env production --region us-east-1 --listen-addr 0.0.0.0:8080 --credentials-file ./keys/prod.pem
+\`\`\`
+
+### Environment Setup
+Set your access token:
+\`\`\`bash
+export DEPLOYX_TOKEN="dx_live_99214"
+\`\`\`
+
+### Local Development Preview
+\`\`\`bash
+deployx preview --preview-port 3000
 \`\`\`
 `,
     codeFiles: {
@@ -204,6 +233,40 @@ PORT=8000
 DATABASE_URL=sqlite:///./dev.db
 \`\`\`
 `,
+    fixedReadmeContent: `# Nexus Auth Service 🛡️
+Lightweight authentication microservice for modern web applications.
+
+## API Usage
+
+### 1. Issue Session Token
+\`\`\`http
+POST /api/v2/auth/token
+Content-Type: application/json
+X-Client-Tenant-ID: <your-organization-id>
+
+{
+  "username": "alice",
+  "password": "secretpassword"
+}
+\`\`\`
+
+### 2. Verify Token in Python Client
+\`\`\`python
+from nexus_auth import verify_token
+
+payload = verify_token(raw_jwt_token, signing_key="my-secret-key", audience="app")
+print("User ID:", payload["uid"])
+\`\`\`
+
+### Environment Variables
+Configure your server with:
+\`\`\`env
+PORT=8000
+DATABASE_URL=postgresql://user:pass@localhost:5432/nexus_db
+NEXUS_ENCRYPTION_KEY=super-secure-32-byte-hex-key
+JWT_ISSUER=nexus-auth-prod
+\`\`\`
+`,
     codeFiles: {
       'api/routes.py': `from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
@@ -332,6 +395,26 @@ classifier = ImageClassifier.load("resnet50.onnx")
 # Run prediction
 results = classifier.predict(image_path="sample.jpg", top_k=5)
 print("Top category:", results[0].label)
+\`\`\`
+`,
+    fixedReadmeContent: `# VisionCore Python SDK 👁️
+Embedded computer vision models for edge devices.
+
+## Installation
+\`\`\`bash
+pip install vision-core
+\`\`\`
+
+## Model Inference Example
+\`\`\`python
+from vision_core import ImageClassifier
+
+# Load default model
+classifier = ImageClassifier.from_pretrained("resnet50.onnx")
+
+# Run prediction
+results = classifier.infer(input_image="sample.jpg", max_predictions=5)
+print("Top category:", results[0]["class_name"])
 \`\`\`
 `,
     codeFiles: {

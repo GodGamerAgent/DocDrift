@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Navbar } from '@/components/Navbar';
 import { HeroCloner } from '@/components/HeroCloner';
 import { HealthScorecard } from '@/components/HealthScorecard';
@@ -8,15 +8,16 @@ import { DriftList } from '@/components/DriftList';
 import { RemediationModal } from '@/components/RemediationModal';
 import { GemmaInspectorModal } from '@/components/GemmaInspectorModal';
 import { LMStudioGuideModal } from '@/components/LMStudioGuideModal';
-import { RepoAnalysisResult, LMStudioStatus, DriftItem } from '@/lib/types';
-import { AlertCircle, GitBranch, Sparkles } from 'lucide-react';
+import { RepoAnalysisResult, LMStudioStatus, RemediationResult } from '@/lib/types';
+import { calculateMetrics } from '@/lib/metrics';
+import { AlertCircle } from 'lucide-react';
 
 export default function HomePage() {
   const [analysis, setAnalysis] = useState<RepoAnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedSampleId, setSelectedSampleId] = useState<string | null>('deployx-cli');
-  
+
   // LM Studio status
   const [lmStatus, setLmStatus] = useState<LMStudioStatus | null>(null);
   const [checkingLm, setCheckingLm] = useState(false);
@@ -28,8 +29,11 @@ export default function HomePage() {
 
   // Remediation states
   const [remediated, setRemediated] = useState(false);
-  const [gitDiff, setGitDiff] = useState('');
-  const [fixedReadme, setFixedReadme] = useState('');
+  const [fix, setFix] = useState<RemediationResult | null>(null);
+  const [fixLoading, setFixLoading] = useState(false);
+
+  // Each scan bumps this so responses from a superseded scan are ignored
+  const scanSeq = useRef(0);
 
   // Check LM Studio on mount
   const checkLM = async () => {
@@ -54,82 +58,83 @@ export default function HomePage() {
     checkLM();
     // Load initial sample
     handleScanSample('deployx-cli');
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
 
-  const handleScanUrl = async (url: string) => {
+  const runScan = async (payload: { repoUrl: string } | { sampleId: string }, fallbackError: string) => {
+    const seq = ++scanSeq.current;
     setLoading(true);
     setError(null);
-    setSelectedSampleId(null);
     setRemediated(false);
+    setFix(null);
+    setFixLoading(false);
 
     try {
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoUrl: url }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
+      if (seq !== scanSeq.current) return;
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to scan repository');
+        throw new Error(data.error || fallbackError);
       }
 
       setAnalysis(data);
       // Pre-fetch fix
-      fetchFix(data);
+      fetchFix(data, seq);
     } catch (err: any) {
-      setError(err.message || 'Scanning failed');
+      if (seq === scanSeq.current) setError(err.message || fallbackError);
     } finally {
-      setLoading(false);
+      if (seq === scanSeq.current) setLoading(false);
     }
   };
 
-  const handleScanSample = async (sampleId: string) => {
-    setLoading(true);
-    setError(null);
+  const handleScanUrl = (url: string) => {
+    setSelectedSampleId(null);
+    runScan({ repoUrl: url }, 'Failed to scan repository');
+  };
+
+  const handleScanSample = (sampleId: string) => {
     setSelectedSampleId(sampleId);
-    setRemediated(false);
-
-    try {
-      const res = await fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sampleId }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to scan sample repository');
-      }
-
-      setAnalysis(data);
-      fetchFix(data, sampleId);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load sample');
-    } finally {
-      setLoading(false);
-    }
+    runScan({ sampleId }, 'Failed to load sample');
   };
 
-  const fetchFix = async (currentAnalysis: RepoAnalysisResult, sampleId?: string) => {
+  const fetchFix = async (currentAnalysis: RepoAnalysisResult, seq: number) => {
+    const payload = currentAnalysis.isSample
+      ? { sampleId: currentAnalysis.sampleId }
+      : { readme: currentAnalysis.readmeContent, readmeFile: currentAnalysis.readmeFile, drifts: currentAnalysis.drifts };
+    if (!currentAnalysis.isSample && !currentAnalysis.readmeContent) return;
+
+    setFixLoading(true);
     try {
       const res = await fetch('/api/fix', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sampleId: sampleId || (currentAnalysis.isSample ? selectedSampleId : undefined),
-        }),
+        body: JSON.stringify(payload),
       });
 
-      if (res.ok) {
-        const fixData = await res.json();
-        setGitDiff(fixData.gitDiff);
-        setFixedReadme(fixData.fixedReadme);
+      if (res.ok && seq === scanSeq.current) {
+        setFix(await res.json());
       }
     } catch (e) {
       console.warn('Failed to pre-fetch fix:', e);
+    } finally {
+      if (seq === scanSeq.current) setFixLoading(false);
     }
   };
+
+  // Metrics reflect only the drifts that are still unresolved
+  const displayedAnalysis = useMemo(
+    () =>
+      analysis && {
+        ...analysis,
+        metrics: calculateMetrics(analysis.drifts.filter((d) => !d.resolved)),
+      },
+    [analysis]
+  );
 
   const handleResolveIndividual = (driftId: string) => {
     if (!analysis) return;
@@ -140,8 +145,7 @@ export default function HomePage() {
     setAnalysis(updated);
 
     // If all resolved, mark remediated
-    const allDone = updated.drifts.every((d) => d.resolved);
-    if (allDone) {
+    if (updated.drifts.every((d) => d.resolved)) {
       setRemediated(true);
     }
   };
@@ -149,22 +153,10 @@ export default function HomePage() {
   const handleApplyMerge = () => {
     if (!analysis) return;
     setRemediated(true);
-    const updated = {
+    setAnalysis({
       ...analysis,
       drifts: analysis.drifts.map((d) => ({ ...d, resolved: true })),
-      metrics: {
-        ...analysis.metrics,
-        overallScore: 100,
-        criticalCount: 0,
-        highCount: 0,
-        mediumCount: 0,
-        lowCount: 0,
-        totalDrifts: 0,
-        estimatedOnboardingFrictionMin: 0,
-        readinessForContributors: 'READY' as const,
-      },
-    };
-    setAnalysis(updated);
+    });
   };
 
   return (
@@ -207,17 +199,17 @@ export default function HomePage() {
         )}
 
         {/* Health Scorecard & Metrics */}
-        {analysis && (
+        {displayedAnalysis && (
           <>
             <HealthScorecard
-              analysis={analysis}
+              analysis={displayedAnalysis}
               onOpenRemediation={() => setShowRemediation(true)}
               remediated={remediated}
             />
 
             {/* List of Drift Items */}
             <DriftList
-              drifts={analysis.drifts}
+              drifts={displayedAnalysis.drifts}
               onResolveIndividual={handleResolveIndividual}
               onOpenDiffForDrift={() => setShowRemediation(true)}
             />
@@ -247,8 +239,10 @@ export default function HomePage() {
       <RemediationModal
         isOpen={showRemediation}
         onClose={() => setShowRemediation(false)}
-        gitDiff={gitDiff}
-        fixedReadme={fixedReadme}
+        gitDiff={fix?.gitDiff || ''}
+        fixedReadme={fix?.fixedReadme || ''}
+        summary={fix?.remediationSummary}
+        loading={fixLoading}
         onApplyMerge={handleApplyMerge}
       />
 

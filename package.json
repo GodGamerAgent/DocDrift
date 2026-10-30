@@ -1,8 +1,8 @@
 {
   "name": "docdrift",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Documentation drift detector and README remediation engine powered by Gemma via LM Studio",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -11,18 +11,18 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "dependencies": {
-    "@types/diff": "^7.0.2",
     "canvas-confetti": "^1.9.4",
-    "clsx": "^2.1.1",
     "diff": "^9.0.0",
     "lucide-react": "^1.65.0",
-    "next": "^14.2.15",
+    "next": "^14.2.35",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "tailwind-merge": "^3.7.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",
@@ -30,6 +30,8 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.6.2",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
     "postcss": "^8.5.32",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3"
