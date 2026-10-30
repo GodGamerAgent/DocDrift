@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import * as Diff from 'diff';
 import { SAMPLE_REPOS } from '@/lib/sampleRepos';
 import { remediateReadme } from '@/lib/remediation';
+import { loadSettings } from '@/lib/settings';
 import { DriftItem, RemediationResult } from '@/lib/types';
 
 const MAX_README_CHARS = 200_000;
@@ -26,14 +27,16 @@ export async function POST(request: Request) {
       const sample = SAMPLE_REPOS[sampleId];
       originalReadme = sample.readmeContent;
       fixedReadme = sample.fixedReadmeContent;
-      remediationSummary = `All ${sample.expectedDrifts.length} outdated instructions have been synchronized with the current codebase.`;
+      const count = sample.expectedDrifts.length;
+      remediationSummary =
+        count === 0 ? 'No drift found, so there is nothing to fix.' : `Fixes all ${count} outdated instructions in the README.`;
     } else if (typeof readme === 'string' && readme.trim()) {
       if (readme.length > MAX_README_CHARS) {
         return NextResponse.json({ error: 'README is too large to remediate' }, { status: 413 });
       }
       const driftItems: DriftItem[] = Array.isArray(drifts) ? drifts.filter((d) => d && typeof d === 'object') : [];
       originalReadme = readme;
-      ({ fixedReadme, summary: remediationSummary } = await remediateReadme(readme, driftItems));
+      ({ fixedReadme, summary: remediationSummary } = await remediateReadme(readme, driftItems, loadSettings()));
       if (typeof readmeFile === 'string' && readmeFile.trim()) fileName = readmeFile;
     } else {
       return NextResponse.json({ error: 'No README content found to fix' }, { status: 400 });
@@ -43,7 +46,7 @@ export async function POST(request: Request) {
     const gitDiff =
       fixedReadme === originalReadme
         ? ''
-        : Diff.createPatch(fileName, originalReadme, fixedReadme, 'Original (Drifted)', 'Gemma 4 Remediated');
+        : Diff.createPatch(fileName, originalReadme, fixedReadme, 'original', 'fixed');
 
     const result: RemediationResult = { originalReadme, fixedReadme, gitDiff, remediationSummary };
     return NextResponse.json(result);

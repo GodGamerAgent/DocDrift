@@ -1,71 +1,56 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Navbar } from '@/components/Navbar';
-import { HeroCloner } from '@/components/HeroCloner';
-import { HealthScorecard } from '@/components/HealthScorecard';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { ScanForm } from '@/components/ScanForm';
+import { ScanProgress } from '@/components/ScanProgress';
+import { ResultSummary } from '@/components/ResultSummary';
 import { DriftList } from '@/components/DriftList';
-import { RemediationModal } from '@/components/RemediationModal';
-import { GemmaInspectorModal } from '@/components/GemmaInspectorModal';
-import { LMStudioGuideModal } from '@/components/LMStudioGuideModal';
-import { RepoAnalysisResult, LMStudioStatus, RemediationResult } from '@/lib/types';
+import { PatchModal } from '@/components/PatchModal';
+import { RepoAnalysisResult, RemediationResult } from '@/lib/types';
 import { calculateMetrics } from '@/lib/metrics';
-import { AlertCircle } from 'lucide-react';
 
-export default function HomePage() {
+export default function ScanPage() {
   const [analysis, setAnalysis] = useState<RepoAnalysisResult | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedSampleId, setSelectedSampleId] = useState<string | null>('deployx-cli');
+  const [activeSampleId, setActiveSampleId] = useState<string | null>(null);
 
-  // LM Studio status
-  const [lmStatus, setLmStatus] = useState<LMStudioStatus | null>(null);
-  const [checkingLm, setCheckingLm] = useState(false);
-
-  // Modals
-  const [showRemediation, setShowRemediation] = useState(false);
-  const [showInspector, setShowInspector] = useState(false);
-  const [showLmGuide, setShowLmGuide] = useState(false);
-
-  // Remediation states
-  const [remediated, setRemediated] = useState(false);
   const [fix, setFix] = useState<RemediationResult | null>(null);
   const [fixLoading, setFixLoading] = useState(false);
+  const [showPatch, setShowPatch] = useState(false);
+  const closePatch = useCallback(() => setShowPatch(false), []);
 
   // Each scan bumps this so responses from a superseded scan are ignored
   const scanSeq = useRef(0);
+  const loading = scanStartedAt !== null;
 
-  // Check LM Studio on mount
-  const checkLM = async () => {
-    setCheckingLm(true);
+  const fetchFix = async (current: RepoAnalysisResult, seq: number) => {
+    if (current.drifts.length === 0) return;
+    if (!current.isSample && !current.readmeContent) return;
+    const payload = current.isSample
+      ? { sampleId: current.sampleId }
+      : { readme: current.readmeContent, readmeFile: current.readmeFile, drifts: current.drifts };
+
+    setFixLoading(true);
     try {
-      const res = await fetch('/api/lmstudio/status');
-      const data = await res.json();
-      setLmStatus(data);
-    } catch (e) {
-      setLmStatus({
-        connected: false,
-        endpoint: 'http://localhost:1234/v1',
-        model: 'gemma-4-12b',
-        availableModels: [],
+      const res = await fetch('/api/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
+      if (res.ok && seq === scanSeq.current) setFix(await res.json());
+    } catch (e) {
+      console.warn('Failed to generate patch:', e);
     } finally {
-      setCheckingLm(false);
+      if (seq === scanSeq.current) setFixLoading(false);
     }
   };
 
-  useEffect(() => {
-    checkLM();
-    // Load initial sample
-    handleScanSample('deployx-cli');
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
-  }, []);
-
-  const runScan = async (payload: { repoUrl: string } | { sampleId: string }, fallbackError: string) => {
+  const runScan = async (payload: { repoUrl: string } | { sampleId: string }) => {
     const seq = ++scanSeq.current;
-    setLoading(true);
+    setScanStartedAt(Date.now());
     setError(null);
-    setRemediated(false);
+    setAnalysis(null);
     setFix(null);
     setFixLoading(false);
 
@@ -75,188 +60,75 @@ export default function HomePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
       const data = await res.json();
       if (seq !== scanSeq.current) return;
-      if (!res.ok) {
-        throw new Error(data.error || fallbackError);
-      }
+      if (!res.ok) throw new Error(data.error || 'Scan failed');
 
       setAnalysis(data);
-      // Pre-fetch fix
       fetchFix(data, seq);
     } catch (err: any) {
-      if (seq === scanSeq.current) setError(err.message || fallbackError);
+      if (seq === scanSeq.current) setError(err.message || 'Scan failed');
     } finally {
-      if (seq === scanSeq.current) setLoading(false);
+      if (seq === scanSeq.current) setScanStartedAt(null);
     }
   };
 
   const handleScanUrl = (url: string) => {
-    setSelectedSampleId(null);
-    runScan({ repoUrl: url }, 'Failed to scan repository');
+    setActiveSampleId(null);
+    runScan({ repoUrl: url });
   };
 
-  const handleScanSample = (sampleId: string) => {
-    setSelectedSampleId(sampleId);
-    runScan({ sampleId }, 'Failed to load sample');
+  const handleSelectSample = (sampleId: string) => {
+    setActiveSampleId(sampleId);
+    runScan({ sampleId });
   };
 
-  const fetchFix = async (currentAnalysis: RepoAnalysisResult, seq: number) => {
-    const payload = currentAnalysis.isSample
-      ? { sampleId: currentAnalysis.sampleId }
-      : { readme: currentAnalysis.readmeContent, readmeFile: currentAnalysis.readmeFile, drifts: currentAnalysis.drifts };
-    if (!currentAnalysis.isSample && !currentAnalysis.readmeContent) return;
-
-    setFixLoading(true);
-    try {
-      const res = await fetch('/api/fix', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (res.ok && seq === scanSeq.current) {
-        setFix(await res.json());
-      }
-    } catch (e) {
-      console.warn('Failed to pre-fetch fix:', e);
-    } finally {
-      if (seq === scanSeq.current) setFixLoading(false);
-    }
+  const handleResolve = (driftId: string) => {
+    setAnalysis((prev) =>
+      prev && { ...prev, drifts: prev.drifts.map((d) => (d.id === driftId ? { ...d, resolved: true } : d)) }
+    );
   };
 
   // Metrics reflect only the drifts that are still unresolved
-  const displayedAnalysis = useMemo(
-    () =>
-      analysis && {
-        ...analysis,
-        metrics: calculateMetrics(analysis.drifts.filter((d) => !d.resolved)),
-      },
+  const displayed = useMemo(
+    () => analysis && { ...analysis, metrics: calculateMetrics(analysis.drifts.filter((d) => !d.resolved)) },
     [analysis]
   );
 
-  const handleResolveIndividual = (driftId: string) => {
-    if (!analysis) return;
-    const updated = {
-      ...analysis,
-      drifts: analysis.drifts.map((d) => (d.id === driftId ? { ...d, resolved: true } : d)),
-    };
-    setAnalysis(updated);
-
-    // If all resolved, mark remediated
-    if (updated.drifts.every((d) => d.resolved)) {
-      setRemediated(true);
-    }
-  };
-
-  const handleApplyMerge = () => {
-    if (!analysis) return;
-    setRemediated(true);
-    setAnalysis({
-      ...analysis,
-      drifts: analysis.drifts.map((d) => ({ ...d, resolved: true })),
-    });
-  };
-
   return (
-    <div className="min-h-screen flex flex-col bg-[#090d16] text-white">
-      {/* Navigation */}
-      <Navbar
-        lmStatus={lmStatus}
-        checkingLm={checkingLm}
-        onRefreshLm={checkLM}
-        onOpenLmGuide={() => setShowLmGuide(true)}
-        onOpenGemmaInspector={() => setShowInspector(true)}
+    <div className="space-y-8">
+      <ScanForm
+        onScanUrl={handleScanUrl}
+        onSelectSample={handleSelectSample}
+        activeSampleId={activeSampleId}
+        loading={loading}
       />
 
-      {/* Main Content */}
-      <main className="flex-1">
-        {/* Hero & Cloner Input */}
-        <HeroCloner
-          onScanUrl={handleScanUrl}
-          onSelectSample={handleScanSample}
-          selectedSampleId={selectedSampleId}
-          loading={loading}
-        />
+      {scanStartedAt !== null && <ScanProgress startedAt={scanStartedAt} />}
 
-        {/* Error Notification */}
-        {error && (
-          <div className="max-w-4xl mx-auto px-4 mb-6">
-            <div className="p-4 rounded-2xl bg-red-950/40 border border-red-500/30 text-red-200 text-xs font-mono flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-                <span>{error}</span>
-              </div>
-              <button
-                onClick={() => setError(null)}
-                className="text-red-400 hover:text-white px-2 py-1 rounded"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Health Scorecard & Metrics */}
-        {displayedAnalysis && (
-          <>
-            <HealthScorecard
-              analysis={displayedAnalysis}
-              onOpenRemediation={() => setShowRemediation(true)}
-              remediated={remediated}
-            />
-
-            {/* List of Drift Items */}
-            <DriftList
-              drifts={displayedAnalysis.drifts}
-              onResolveIndividual={handleResolveIndividual}
-              onOpenDiffForDrift={() => setShowRemediation(true)}
-            />
-          </>
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-[#070a12] py-8 text-xs text-slate-500 font-mono">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center space-x-2">
-            <span className="text-slate-400 font-semibold">DocDrift AI</span>
-            <span>·</span>
-            <span>Hacktoberfest Hack Day &apos;26 (Newton School of Technology × SMRU)</span>
-          </div>
-          <div className="flex items-center space-x-4">
-            <span className="text-blue-400">Track 2: Google Gemma 4 (12B)</span>
-            <span>·</span>
-            <span className="text-slate-400">Problem Statement #18</span>
-            <span>·</span>
-            <span className="text-slate-400">Apache 2.0 Open Source</span>
-          </div>
+      {error && (
+        <div className="flex items-start justify-between gap-4 rounded-lg border border-danger/30 bg-danger/5 p-4 text-sm">
+          <span className="text-danger">{error}</span>
+          <button onClick={() => setError(null)} className="shrink-0 text-xs text-muted hover:text-fg">
+            Dismiss
+          </button>
         </div>
-      </footer>
+      )}
 
-      {/* Modals */}
-      <RemediationModal
-        isOpen={showRemediation}
-        onClose={() => setShowRemediation(false)}
+      {displayed && (
+        <div className="space-y-6">
+          <ResultSummary analysis={displayed} onOpenPatch={() => setShowPatch(true)} patchLoading={fixLoading} />
+          <DriftList drifts={displayed.drifts} onResolve={handleResolve} />
+        </div>
+      )}
+
+      <PatchModal
+        isOpen={showPatch}
+        onClose={closePatch}
         gitDiff={fix?.gitDiff || ''}
         fixedReadme={fix?.fixedReadme || ''}
         summary={fix?.remediationSummary}
         loading={fixLoading}
-        onApplyMerge={handleApplyMerge}
-      />
-
-      <GemmaInspectorModal
-        isOpen={showInspector}
-        onClose={() => setShowInspector(false)}
-        modelName={lmStatus?.model || 'gemma-4-12b'}
-      />
-
-      <LMStudioGuideModal
-        isOpen={showLmGuide}
-        onClose={() => setShowLmGuide(false)}
-        status={lmStatus}
-        onRefresh={checkLM}
       />
     </div>
   );

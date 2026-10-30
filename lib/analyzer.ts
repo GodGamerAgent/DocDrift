@@ -3,7 +3,7 @@ import path from 'path';
 import { DriftItem, DriftCategory, DriftSeverity, RepoAnalysisResult } from './types';
 import { checkLMStudioHealth, queryGemmaLMStudio } from './lmstudio';
 import { calculateMetrics } from './metrics';
-import { DRIFT_SYSTEM_PROMPT } from './prompts';
+import { Settings } from './settingsSchema';
 import { SAMPLE_REPOS } from './sampleRepos';
 
 export interface CodeBlockDoc {
@@ -26,8 +26,6 @@ const CATEGORIES: DriftCategory[] = [
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.next', 'vendor', 'target', 'venv', '.venv']);
 const LOCK_FILES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'cargo.lock', 'poetry.lock', 'composer.lock']);
-const MAX_CODE_FILES = 300;
-const MAX_CODE_FILE_BYTES = 200_000;
 const MAX_HEURISTIC_DRIFTS_PER_KIND = 10;
 
 // Shell code-block languages whose commands may document the project's own CLI.
@@ -254,17 +252,25 @@ function codeFilePriority(file: string, content: string): number {
   return score - file.split('/').length * 0.1;
 }
 
+function summarize(drifts: DriftItem[], hasReadme: boolean): string {
+  if (!hasReadme) return 'No README found, so there is no documentation to check.';
+  if (drifts.length === 0) return 'The README matches the code. No drift found.';
+  const critical = drifts.filter((d) => d.severity === 'CRITICAL').length;
+  return `Found ${drifts.length} place${drifts.length === 1 ? '' : 's'} where the README no longer matches the code${critical ? ` (${critical} critical)` : ''}.`;
+}
+
 export async function analyzeLocalDirectory(
   repoPath: string,
   repoName: string,
-  repoUrl?: string
+  repoUrl: string | undefined,
+  settings: Settings
 ): Promise<RepoAnalysisResult> {
   const docsScanned: string[] = [];
   const codeFilesScanned: string[] = [];
 
   // 1. Gather all files (Dirent.isFile/isDirectory are false for symlinks, so links are never followed)
   function scanDir(dir: string, depth = 0) {
-    if (depth > 5) return;
+    if (depth > settings.maxScanDepth) return;
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
@@ -308,10 +314,10 @@ export async function analyzeLocalDirectory(
   }
 
   const codeFiles: { file: string; content: string }[] = [];
-  for (const cFile of codeFilesScanned.slice(0, MAX_CODE_FILES)) {
+  for (const cFile of codeFilesScanned.slice(0, settings.maxCodeFiles)) {
     try {
       const fullPath = path.join(repoPath, cFile);
-      if (fs.statSync(fullPath).size > MAX_CODE_FILE_BYTES) continue;
+      if (fs.statSync(fullPath).size > settings.maxFileSizeKb * 1024) continue;
       codeFiles.push({ file: cFile, content: fs.readFileSync(fullPath, 'utf-8') });
     } catch (e) {
       // skip unreadable files
@@ -319,23 +325,29 @@ export async function analyzeLocalDirectory(
   }
 
   let foundDrifts: DriftItem[] | null = null;
-  let modelUsed = 'Rule-based fallback (LM Studio offline)';
+  let modelUsed = 'Rule-based checks';
   let inferenceMode: RepoAnalysisResult['inferenceMode'] = 'GEMMA_LOCAL_SIMULATOR';
+  let modelError: string | null = null;
 
-  // Live AI drift detection with Gemma when LM Studio is reachable
-  const lmStatus = await checkLMStudioHealth();
-  if (lmStatus.connected && readmeContent) {
-    const promptFiles = [...codeFiles]
-      .sort((a, b) => codeFilePriority(b.file, b.content) - codeFilePriority(a.file, a.content))
-      .slice(0, 8);
+  if (!readmeContent) {
+    foundDrifts = [];
+    modelUsed = 'Not run (no README)';
+  } else if (settings.analysisMode !== 'rules') {
+    const lmStatus = await checkLMStudioHealth(settings.lmStudioEndpoint, settings.model);
+    if (!lmStatus.connected) {
+      modelError = lmStatus.error || 'LM Studio is not reachable';
+    } else {
+      const promptFiles = [...codeFiles]
+        .sort((a, b) => codeFilePriority(b.file, b.content) - codeFilePriority(a.file, a.content))
+        .slice(0, settings.filesForAnalysis);
 
-    const prompt = `Analyze this repository's documentation and code to identify Documentation Drift (outdated flags, changed API routes, renamed methods, missing env vars, broken quickstart steps).
+      const prompt = `Analyze this repository's documentation and code to identify Documentation Drift (outdated flags, changed API routes, renamed methods, missing env vars, broken quickstart steps).
 
 README (${readmeFile}):
-${readmeContent.slice(0, 3500)}
+${readmeContent.slice(0, settings.readmeCharsForAnalysis)}
 
 Codebase Snippets:
-${promptFiles.map((c) => `--- File: ${c.file} ---\n${c.content.slice(0, 1500)}`).join('\n\n')}
+${promptFiles.map((c) => `--- File: ${c.file} ---\n${c.content.slice(0, settings.charsPerFile)}`).join('\n\n')}
 
 Return a JSON array of drift items with this exact schema:
 [
@@ -357,41 +369,43 @@ Return a JSON array of drift items with this exact schema:
 ]
 `;
 
-    try {
-      const gemmaResponse = await queryGemmaLMStudio({
-        model: lmStatus.model,
-        messages: [
-          { role: 'system', content: DRIFT_SYSTEM_PROMPT },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.1,
-        maxTokens: 4000,
-      });
+      try {
+        const gemmaResponse = await queryGemmaLMStudio({
+          endpoint: settings.lmStudioEndpoint,
+          model: lmStatus.model,
+          messages: [
+            { role: 'system', content: settings.analysisPrompt },
+            { role: 'user', content: prompt },
+          ],
+          temperature: settings.temperature,
+          maxTokens: settings.analysisMaxTokens,
+          timeoutMs: settings.requestTimeoutSec * 1000,
+        });
 
-      const parsed = parseDriftJson(gemmaResponse.content);
-      if (parsed) {
-        foundDrifts = normalizeDrifts(parsed, readmeFile);
-        inferenceMode = 'LM_STUDIO_LIVE';
-        modelUsed = `${gemmaResponse.model} (LM Studio)`;
-      } else {
-        console.warn('[DocDrift] Model response was not a JSON array; using rule-based fallback.');
+        const parsed = parseDriftJson(gemmaResponse.content);
+        if (parsed) {
+          foundDrifts = normalizeDrifts(parsed, readmeFile);
+          inferenceMode = 'LM_STUDIO_LIVE';
+          modelUsed = `${gemmaResponse.model} (LM Studio)`;
+        } else {
+          modelError = 'the model did not return a JSON array';
+        }
+      } catch (err: any) {
+        modelError = err.message || 'the model request failed';
       }
-    } catch (err) {
-      // Fall through to the rule-based detector below
     }
   }
 
+  let notice: string | undefined;
   if (!foundDrifts) {
+    if (settings.analysisMode === 'model') {
+      throw new Error(`Model analysis failed: ${modelError?.replace(/\.$/, '')}. Set the analysis engine to Auto in Settings to fall back to rule-based checks.`);
+    }
     foundDrifts = detectHeuristicDrifts(readmeContent, readmeFile, codeFiles);
-    if (lmStatus.connected) modelUsed = 'Rule-based fallback (model response unusable)';
-  }
-
-  const metrics = calculateMetrics(foundDrifts);
-  let summary = 'Documentation is in sync with codebase! No major drift detected.';
-  if (!readmeContent) {
-    summary = 'No README found in this repository, so there is no documentation to check for drift.';
-  } else if (foundDrifts.length > 0) {
-    summary = `Found ${foundDrifts.length} documentation drift${foundDrifts.length === 1 ? '' : 's'} (${metrics.criticalCount} critical). New contributors following the README are likely to hit setup failures.`;
+    if (modelError) {
+      modelUsed = 'Rule-based fallback';
+      notice = `Model unavailable (${modelError}), so only rule-based checks ran.`;
+    }
   }
 
   return {
@@ -401,39 +415,34 @@ Return a JSON array of drift items with this exact schema:
     totalFilesScanned: docsScanned.length + codeFilesScanned.length,
     docsScanned,
     codeFilesScanned,
-    metrics,
+    metrics: calculateMetrics(foundDrifts),
     drifts: foundDrifts,
     modelUsed,
     inferenceMode,
     analyzedAt: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    summary,
+    summary: summarize(foundDrifts, !!readmeContent),
+    notice,
     readmeFile: readmeContent ? readmeFile : undefined,
     readmeContent: readmeContent || undefined,
   };
 }
 
-export async function analyzeSampleRepo(sampleId: string): Promise<RepoAnalysisResult> {
-  const sample = SAMPLE_REPOS[sampleId] || SAMPLE_REPOS['deployx-cli'];
-
-  // Calculate realistic metrics
-  const metrics = calculateMetrics(sample.expectedDrifts);
-
-  // Showcase drifts are precomputed; report whether a live model is available
-  const lmStatus = await checkLMStudioHealth();
+// Examples are precomputed, so they load instantly and need no model.
+export function analyzeSampleRepo(sampleId: string): RepoAnalysisResult {
+  const sample = SAMPLE_REPOS[sampleId];
 
   return {
     repoName: sample.name,
-    repoUrl: `https://github.com/${sample.name}`,
     isSample: true,
     sampleId: sample.id,
     totalFilesScanned: 1 + Object.keys(sample.codeFiles).length,
     docsScanned: ['README.md'],
     codeFilesScanned: Object.keys(sample.codeFiles),
-    metrics,
+    metrics: calculateMetrics(sample.expectedDrifts),
     drifts: sample.expectedDrifts,
-    modelUsed: lmStatus.connected ? `${lmStatus.model} (LM Studio)` : 'Gemma 4 12B (showcase, LM Studio offline)',
-    inferenceMode: lmStatus.connected ? 'LM_STUDIO_LIVE' : 'GEMMA_LOCAL_SIMULATOR',
+    modelUsed: 'Built-in example',
+    inferenceMode: 'GEMMA_LOCAL_SIMULATOR',
     analyzedAt: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    summary: `Detected ${sample.expectedDrifts.length} drift points (${metrics.criticalCount} critical). Onboarding a new contributor currently takes ~${metrics.estimatedOnboardingFrictionMin} min of troubleshooting.`,
+    summary: summarize(sample.expectedDrifts, true),
   };
 }

@@ -34,3 +34,6 @@ next-env.d.ts
 
 # temp clones
 /tmp/
+
+# saved app settings
+/.docdrift/

@@ -1,9 +1,6 @@
 import { DriftItem } from './types';
 import { checkLMStudioHealth, queryGemmaLMStudio } from './lmstudio';
-import { REMEDIATION_SYSTEM_PROMPT } from './prompts';
-
-// Larger READMEs would be truncated by the model's output budget, so they use the rule-based patch.
-const MAX_LLM_README_CHARS = 15000;
+import { Settings } from './settingsSchema';
 
 function stripOuterFence(text: string): string {
   const match = text.trim().match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
@@ -11,7 +8,11 @@ function stripOuterFence(text: string): string {
 }
 
 // Rule-based patch: the one drift kind that can be fixed mechanically is an undocumented env var.
-function applyRuleBasedFixes(readme: string, drifts: DriftItem[]): { fixedReadme: string; summary: string } {
+function applyRuleBasedFixes(
+  readme: string,
+  drifts: DriftItem[],
+  modelNote = ''
+): { fixedReadme: string; summary: string } {
   const envLines = new Set<string>();
   for (const drift of drifts) {
     if (drift.category !== 'ENV_VARIABLE') continue;
@@ -22,7 +23,8 @@ function applyRuleBasedFixes(readme: string, drifts: DriftItem[]): { fixedReadme
   }
 
   const manualCount = drifts.filter((d) => d.category !== 'ENV_VARIABLE').length;
-  const manualNote = manualCount > 0 ? ` ${manualCount} other drift${manualCount === 1 ? ' needs' : 's need'} a manual edit (start LM Studio for AI-written fixes).` : '';
+  const manualNote =
+    (manualCount > 0 ? ` ${manualCount} other issue${manualCount === 1 ? ' needs' : 's need'} a manual edit.` : '') + modelNote;
 
   if (envLines.size === 0) {
     return { fixedReadme: readme, summary: `No automatic patch could be generated.${manualNote}` };
@@ -47,14 +49,23 @@ function applyRuleBasedFixes(readme: string, drifts: DriftItem[]): { fixedReadme
 
 export async function remediateReadme(
   readme: string,
-  drifts: DriftItem[]
+  drifts: DriftItem[],
+  settings: Settings
 ): Promise<{ fixedReadme: string; summary: string }> {
   if (drifts.length === 0) {
-    return { fixedReadme: readme, summary: 'No drift detected, so there is nothing to remediate.' };
+    return { fixedReadme: readme, summary: 'No drift found, so there is nothing to fix.' };
+  }
+  if (settings.remediationMode === 'rules') {
+    return applyRuleBasedFixes(readme, drifts);
   }
 
-  const lmStatus = await checkLMStudioHealth();
-  if (lmStatus.connected && readme.length <= MAX_LLM_README_CHARS) {
+  let modelError: string;
+  const lmStatus = await checkLMStudioHealth(settings.lmStudioEndpoint, settings.model);
+  if (!lmStatus.connected) {
+    modelError = lmStatus.error || 'LM Studio is not reachable';
+  } else if (readme.length > settings.maxReadmeCharsForRewrite) {
+    modelError = `the README is longer than the ${settings.maxReadmeCharsForRewrite}-character rewrite limit`;
+  } else {
     const driftList = drifts
       .map(
         (d, i) =>
@@ -64,24 +75,29 @@ export async function remediateReadme(
 
     try {
       const res = await queryGemmaLMStudio({
+        endpoint: settings.lmStudioEndpoint,
         model: lmStatus.model,
         messages: [
-          { role: 'system', content: REMEDIATION_SYSTEM_PROMPT },
+          { role: 'system', content: settings.remediationPrompt },
           { role: 'user', content: `Detected drifts:\n${driftList}\n\nREADME to fix:\n${readme}` },
         ],
-        temperature: 0.1,
-        maxTokens: 6000,
+        temperature: settings.temperature,
+        maxTokens: settings.remediationMaxTokens,
+        timeoutMs: settings.requestTimeoutSec * 1000,
       });
       const fixedReadme = stripOuterFence(res.content);
       // Guard against truncated or off-task output replacing the whole README
       if (fixedReadme.length >= readme.length * 0.5) {
         return { fixedReadme: `${fixedReadme}\n`, summary: `README rewritten by ${res.model} to resolve ${drifts.length} drift${drifts.length === 1 ? '' : 's'}.` };
       }
-      console.warn('[DocDrift] Model remediation output looked truncated; using rule-based patch.');
-    } catch (err) {
-      // Fall through to rule-based fixes
+      modelError = 'the model output looked truncated';
+    } catch (err: any) {
+      modelError = err.message || 'the model request failed';
     }
   }
 
-  return applyRuleBasedFixes(readme, drifts);
+  if (settings.remediationMode === 'model') {
+    return { fixedReadme: readme, summary: `No patch: model rewrite failed (${modelError}).` };
+  }
+  return applyRuleBasedFixes(readme, drifts, ` Model rewrite unavailable (${modelError}).`);
 }

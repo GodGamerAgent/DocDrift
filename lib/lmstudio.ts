@@ -1,11 +1,9 @@
 import { LMStudioStatus } from './types';
 
-export const DEFAULT_LMSTUDIO_ENDPOINT = process.env.LMSTUDIO_ENDPOINT || 'http://localhost:1234/v1';
 export const TARGET_MODEL_NAME = 'gemma-4-12b';
-// Full analyses on a local 12B model (especially reasoning variants) can take minutes
-export const LMSTUDIO_TIMEOUT_MS = Number(process.env.LMSTUDIO_TIMEOUT_MS) || 300000;
 
-export async function checkLMStudioHealth(endpoint: string = DEFAULT_LMSTUDIO_ENDPOINT): Promise<LMStudioStatus> {
+// preferredModel '' means auto: the first Gemma model LM Studio lists, else the first model.
+export async function checkLMStudioHealth(endpoint: string, preferredModel = ''): Promise<LMStudioStatus> {
   const startTime = Date.now();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 3500);
@@ -23,7 +21,7 @@ export async function checkLMStudioHealth(endpoint: string = DEFAULT_LMSTUDIO_EN
       return {
         connected: false,
         endpoint,
-        model: TARGET_MODEL_NAME,
+        model: preferredModel || TARGET_MODEL_NAME,
         availableModels: [],
         error: `HTTP ${res.status}: ${res.statusText}`,
       };
@@ -32,14 +30,15 @@ export async function checkLMStudioHealth(endpoint: string = DEFAULT_LMSTUDIO_EN
     const data = await res.json();
     const latency = Date.now() - startTime;
     const models: string[] = (data.data || []).map((m: any) => m.id).filter(Boolean);
+    const chatModels = models.filter((id) => !/embed/i.test(id));
 
     // Look for gemma model if available
-    const gemmaMatch = models.find((id) => id.toLowerCase().includes('gemma')) || models[0] || TARGET_MODEL_NAME;
+    const autoModel = chatModels.find((id) => id.toLowerCase().includes('gemma')) || chatModels[0] || TARGET_MODEL_NAME;
 
     return {
       connected: true,
       endpoint,
-      model: gemmaMatch,
+      model: preferredModel || autoModel,
       availableModels: models,
       latencyMs: latency,
     };
@@ -47,9 +46,12 @@ export async function checkLMStudioHealth(endpoint: string = DEFAULT_LMSTUDIO_EN
     return {
       connected: false,
       endpoint,
-      model: TARGET_MODEL_NAME,
+      model: preferredModel || TARGET_MODEL_NAME,
       availableModels: [],
-      error: err.message || 'Cannot reach LM Studio server. Ensure local server is started on port 1234.',
+      error:
+        err.name === 'AbortError'
+          ? 'Timed out connecting to LM Studio'
+          : `Cannot reach LM Studio at ${endpoint}. Make sure its local server is running.`,
     };
   } finally {
     clearTimeout(timeoutId);
@@ -58,18 +60,18 @@ export async function checkLMStudioHealth(endpoint: string = DEFAULT_LMSTUDIO_EN
 
 export async function queryGemmaLMStudio({
   messages,
-  endpoint = DEFAULT_LMSTUDIO_ENDPOINT,
-  model = TARGET_MODEL_NAME,
-  temperature = 0.2,
-  maxTokens = 2000,
-  timeoutMs = LMSTUDIO_TIMEOUT_MS,
+  endpoint,
+  model,
+  temperature,
+  maxTokens,
+  timeoutMs,
 }: {
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-  endpoint?: string;
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  timeoutMs?: number;
+  endpoint: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  timeoutMs: number;
 }): Promise<{ content: string; model: string }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -101,8 +103,11 @@ export async function queryGemmaLMStudio({
       content: text,
       model: data.model || model,
     };
-  } catch (err) {
+  } catch (err: any) {
     console.warn('[DocDrift] LM Studio request failed or timed out:', err);
+    if (err.name === 'AbortError') {
+      throw new Error(`the model did not answer within ${Math.round(timeoutMs / 1000)}s (raise the request timeout in Settings)`);
+    }
     throw err;
   } finally {
     clearTimeout(timeoutId);

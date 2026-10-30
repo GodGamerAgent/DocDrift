@@ -6,6 +6,7 @@ import path from 'path';
 import os from 'os';
 import { analyzeLocalDirectory, analyzeSampleRepo } from '@/lib/analyzer';
 import { SAMPLE_REPOS } from '@/lib/sampleRepos';
+import { loadSettings } from '@/lib/settings';
 
 const execFileAsync = promisify(execFile);
 const GITHUB_NAME = /^[A-Za-z0-9_.-]+$/;
@@ -49,8 +50,7 @@ export async function POST(request: Request) {
       if (typeof sampleId !== 'string' || !SAMPLE_REPOS[sampleId]) {
         return NextResponse.json({ error: `Unknown sample repository: ${String(sampleId)}` }, { status: 400 });
       }
-      const result = await analyzeSampleRepo(sampleId);
-      return NextResponse.json(result);
+      return NextResponse.json(analyzeSampleRepo(sampleId));
     }
 
     // 2. If GitHub URL requested
@@ -66,6 +66,8 @@ export async function POST(request: Request) {
       );
     }
 
+    const settings = loadSettings();
+
     // Create isolated temporary directory
     const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docdrift-'));
 
@@ -77,7 +79,7 @@ export async function POST(request: Request) {
         await execFileAsync(
           'git',
           ['clone', '--depth', '1', '--single-branch', '--no-tags', '--', parsed.cloneUrl, cloneDir],
-          { timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+          { timeout: settings.cloneTimeoutSec * 1000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
         );
       } catch (cloneErr: any) {
         console.error('Git clone failed:', cloneErr.stderr || cloneErr.message);
@@ -87,12 +89,17 @@ export async function POST(request: Request) {
           ? 'the repository is private or does not exist'
           : 'git could not fetch it';
         return NextResponse.json(
-          { error: `Failed to clone ${parsed.repoName}: ${reason}. Try one of the built-in showcase repos!` },
+          { error: `Failed to clone ${parsed.repoName}: ${reason}.` },
           { status: 502 }
         );
       }
 
-      const result = await analyzeLocalDirectory(cloneDir, parsed.repoName, `https://github.com/${parsed.repoName}`);
+      const result = await analyzeLocalDirectory(
+        cloneDir,
+        parsed.repoName,
+        `https://github.com/${parsed.repoName}`,
+        settings
+      );
       return NextResponse.json(result);
     } finally {
       fs.promises.rm(cloneDir, { recursive: true, force: true }).catch(() => {});

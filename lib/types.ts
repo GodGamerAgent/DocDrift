@@ -51,6 +51,8 @@ export interface RepoAnalysisResult {
   inferenceMode: 'LM_STUDIO_LIVE' | 'GEMMA_LOCAL_SIMULATOR';
   analyzedAt: string;
   summary: string;
+  // Shown when the model was requested but could not be used
+  notice?: string;
   // Present for cloned repos so the remediation step can patch the actual README
   readmeFile?: string;
   readmeContent?: string;
