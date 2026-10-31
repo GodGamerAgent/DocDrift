@@ -2,7 +2,8 @@ import { GoogleGenAI } from '@google/genai';
 import { LMStudioStatus } from './types';
 
 export const TARGET_MODEL_NAME = 'gemma-4-26b-a4b-it';
-export const FALLBACK_CLOUD_MODELS = ['gemma-4-26b-a4b-it', 'gemma-4-12b', 'gemini-3.8-flash'];
+// Gemma only: the hackathon track requires Gemma to do the real AI work, so never fall back to a closed model.
+export const FALLBACK_CLOUD_MODELS = ['gemma-4-26b-a4b-it'];
 
 function getGenAIClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -142,7 +143,6 @@ export async function queryGemmaLMStudio({
   const candidateModels = [
     model && !model.includes('12b') ? model : 'gemma-4-26b-a4b-it',
     'gemma-4-26b-a4b-it',
-    'gemini-3-flash-preview',
   ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx);
 
   let lastError: any = null;

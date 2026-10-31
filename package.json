@@ -8,6 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "npx --yes tsx --test lib/docdrift.test.ts",
+    "test:e2e": "npx --yes tsx scripts/test-e2e.js",
     "revert:v1": "git checkout v1.0.0-baseline -- ."
   },
   "keywords": [],
