@@ -38,3 +38,6 @@ next-env.d.ts
 
 # saved app settings
 /.docdrift/
+
+# AI Studio agent artifacts
+/.aistudio/
