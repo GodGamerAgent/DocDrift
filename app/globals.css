@@ -2,58 +2,314 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Colors are RGB channels so Tailwind opacity modifiers (bg-fg/10) work. */
-:root {
-  --bg: 255 255 255;
-  --surface: 250 250 250;
-  --fg: 24 24 27;
-  --muted: 113 113 122;
-  --line: 228 228 231;
-  --accent: 37 99 235;
-  --danger: 220 38 38;
-  --warn: 217 119 6;
-  --ok: 22 163 74;
+/* ============================================================================
+   1. MULTI-THEME COLOR TOKENS (RGB Channels for Alpha Support)
+   ============================================================================ */
+
+/* Theme 1: Atelier Paper (Default Warm Architectural Light) */
+:root,
+[data-theme='atelier'] {
+  --bg: 245 242 235;               /* #F5F2EB - Warm Architectural Drafting Paper */
+  --surface: 255 255 255;          /* #FFFFFF - Pure Alabaster Card Surface */
+  --fg: 24 24 27;                  /* #18181B - Deep Charcoal Ink */
+  --muted: 98 96 89;               /* #626059 - Warm Technical Slate */
+  --line: 214 209 196;             /* #D6D1C4 - Hairline Drafting Border */
+  --depth-edge: 188 181 164;       /* #BCB5A4 - 3D Card & Keycap Bottom Ledge */
+  --accent: 21 128 61;             /* #15803D - Botanical Forest Green */
+  --accent-secondary: 29 78 216;   /* #1D4ED8 - Blueprint Cobalt */
+  --danger: 194 65 12;             /* #C2410C - Terracotta Rust */
+  --warn: 180 83 9;                /* #B45309 - Warm Ochre Amber */
+  --ok: 21 128 61;                 /* #15803D - Forest Verification Green */
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: 10 10 11;
-    --surface: 20 20 23;
-    --fg: 237 237 239;
-    --muted: 150 150 160;
-    --line: 39 39 44;
-    --accent: 96 165 250;
-    --danger: 248 113 113;
-    --warn: 251 191 36;
-    --ok: 74 222 128;
-    color-scheme: dark;
-  }
+/* Theme 2: Nordic Studio (Crisp Gallery Daylight) */
+[data-theme='nordic'] {
+  --bg: 248 250 252;               /* #F8FAFC - Cool Alabaster */
+  --surface: 255 255 255;          /* #FFFFFF - Pure White */
+  --fg: 15 23 42;                  /* #0F172A - Deep Slate */
+  --muted: 100 116 139;            /* #64748B - Cool Muted Slate */
+  --line: 203 213 225;             /* #CBD5E1 - Crisp Slate Border */
+  --depth-edge: 176 190 209;       /* #B0BED1 - Cool 3D Extrusion Edge */
+  --accent: 37 99 235;             /* #2563EB - Blueprint Royal Blue */
+  --accent-secondary: 5 150 105;   /* #059669 - Nordic Emerald */
+  --danger: 220 38 38;             /* #DC2626 - Crimson Red */
+  --warn: 217 119 6;               /* #D97706 - Amber */
+  --ok: 5 150 105;                 /* #059669 - Emerald Green */
+  color-scheme: light;
 }
 
-@layer base {
-  body {
-    @apply bg-bg text-fg antialiased;
-  }
+/* Theme 3: Starlight Observatory (Warm Scholarly Dark) */
+[data-theme='starlight'] {
+  --bg: 17 22 34;                  /* #111622 - Deep Observatory Slate-Indigo */
+  --surface: 26 33 51;             /* #1A2133 - Elevated Midnight Slate */
+  --fg: 243 240 230;               /* #F3F0E6 - Warm Ivory Parchment Text */
+  --muted: 156 163 175;            /* #9CA3AF - Muted Silver-Slate */
+  --line: 46 58 82;                /* #2E3A52 - Subtle Structural Line */
+  --depth-edge: 9 13 22;           /* #090D16 - Dark 3D Extrusion Ledge */
+  --accent: 217 119 6;             /* #D97706 - Warm Brass / Amber Gold */
+  --accent-secondary: 52 211 153;  /* #34D399 - Observatory Sage */
+  --danger: 248 113 113;           /* #F87171 - Soft Coral Red */
+  --warn: 251 191 36;              /* #FBBF24 - Warm Gold */
+  --ok: 52 211 153;                /* #34D399 - Sage Mint */
+  color-scheme: dark;
 }
+
+/* ============================================================================
+   2. BASE TYPOGRAPHY & ARCHITECTURAL BLUEPRINT CANVAS
+   ============================================================================ */
+
+body {
+  background-color: rgb(var(--bg));
+  color: rgb(var(--fg));
+  font-family: var(--font-sans), 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-sans {
+  font-family: var(--font-sans), 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+}
+
+.font-mono {
+  font-family: var(--font-mono), 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Subtle 32px Architectural Drafting Grid + Top Radial Wash */
+.atelier-blueprint {
+  background-image:
+    radial-gradient(ellipse 80% 45% at 50% -10%, rgb(var(--accent) / 0.07), transparent),
+    linear-gradient(to right, rgb(var(--line) / 0.32) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--line) / 0.32) 1px, transparent 1px);
+  background-size: 100% 100%, 32px 32px, 32px 32px;
+}
+
+/* ============================================================================
+   3. TACTILE 3D SPATIAL COMPONENTS (Cards, Keycaps & Recessed Wells)
+   ============================================================================ */
 
 @layer components {
-  .card {
-    @apply rounded-lg border border-line bg-surface;
+  /* Responsive 3D Extruded Card Surface */
+  .card,
+  .card-3d {
+    position: relative;
+    border-radius: 0.85rem;
+    border: 1px solid rgb(var(--line));
+    background-color: rgb(var(--surface));
+    transform-style: preserve-3d;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.35),
+      0 5px 0 -1px rgb(var(--depth-edge)),
+      0 14px 28px -10px rgba(15, 23, 42, 0.10);
+    transition:
+      transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+      box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 160ms ease;
   }
-  .btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-line bg-bg px-3 py-1.5 text-sm font-medium text-fg transition-colors hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50;
+
+  .card:hover,
+  .card-3d:hover {
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.42),
+      0 6px 0 -1px rgb(var(--depth-edge)),
+      0 20px 36px -12px rgba(15, 23, 42, 0.16);
   }
-  .btn-primary {
-    @apply border-transparent bg-fg text-bg hover:bg-fg/85;
+
+  /* Modern Tactile Studio Button */
+  .btn,
+  .button,
+  .btn-keycap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    gap: 0.5rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgb(var(--line));
+    background-color: rgb(var(--surface));
+    padding: 0.55rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    color: rgb(var(--fg));
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.55),
+      0 1px 2px 0 rgba(15, 23, 42, 0.06),
+      0 4px 10px -2px rgba(15, 23, 42, 0.08);
+    transform: translateY(0px);
+    transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1);
   }
+
+  .btn:hover:not(:disabled),
+  .button:hover:not(:disabled),
+  .btn-keycap:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: rgb(var(--accent) / 0.55);
+    background-color: rgb(var(--surface));
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.65),
+      0 4px 12px -2px rgba(15, 23, 42, 0.12),
+      0 2px 4px -1px rgba(15, 23, 42, 0.06);
+  }
+
+  .btn:active:not(:disabled),
+  .button:active:not(:disabled),
+  .btn-keycap:active:not(:disabled) {
+    transform: translateY(0.5px);
+    box-shadow:
+      inset 0 1px 2px 0 rgba(15, 23, 42, 0.08),
+      0 1px 2px 0 rgba(15, 23, 42, 0.05);
+  }
+
+  .btn:disabled,
+  .button:disabled,
+  .btn-keycap:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Modern Primary CTA Button (Scan Repository, View patch & Open PR, Prepare GitHub PR) */
+  .btn-primary,
+  .btn-keycap-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    gap: 0.5rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgb(var(--accent));
+    background-color: rgb(var(--accent));
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(0, 0, 0, 0.06) 100%);
+    padding: 0.55rem 1.1rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    color: #ffffff;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.28),
+      0 2px 4px -1px rgb(var(--accent) / 0.25),
+      0 8px 18px -4px rgb(var(--accent) / 0.35);
+    transform: translateY(0px);
+    transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .btn-primary:hover:not(:disabled),
+  .btn-keycap-primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: rgb(var(--accent));
+    background-color: rgb(var(--accent));
+    filter: brightness(1.06);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.35),
+      0 4px 8px -2px rgb(var(--accent) / 0.32),
+      0 12px 22px -4px rgb(var(--accent) / 0.42);
+  }
+
+  .btn-primary:active:not(:disabled),
+  .btn-keycap-primary:active:not(:disabled) {
+    transform: translateY(0.5px);
+    filter: brightness(0.98);
+    box-shadow:
+      inset 0 1px 2px 0 rgba(0, 0, 0, 0.18),
+      0 2px 4px -1px rgb(var(--accent) / 0.25);
+  }
+
+  .btn-primary:disabled,
+  .btn-keycap-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Recessed 3D Input, Code & Metric Well */
+  .depth-well {
+    box-shadow:
+      inset 0 2px 4px 0 rgba(15, 23, 42, 0.06),
+      0 2px 0 0 rgb(var(--depth-edge) / 0.65);
+  }
+
   .input {
-    @apply w-full rounded-md border border-line bg-bg px-3 py-2 text-sm text-fg placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30;
+    @apply w-full rounded-xl border border-line bg-bg px-3.5 py-2.5 text-sm text-fg placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30;
+    box-shadow:
+      inset 0 2px 4px 0 rgba(15, 23, 42, 0.06),
+      0 1px 0 0 rgba(255, 255, 255, 0.25);
   }
+
   .label {
-    @apply block text-sm font-medium text-fg;
+    @apply block text-sm font-semibold text-fg;
   }
+
   .hint {
     @apply text-xs text-muted;
+  }
+}
+
+/* ============================================================================
+   4. 3D ISOMETRIC STACK & MARQUEE ANIMATION UTILITIES
+   ============================================================================ */
+
+.iso-stage {
+  perspective: 1000px;
+}
+
+.iso-stack {
+  transform: rotateX(24deg) rotateY(-18deg);
+  transform-style: preserve-3d;
+  transition: transform 200ms ease-out;
+}
+
+@keyframes marqueeScroll {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  display: flex;
+  width: max-content;
+  animation: marqueeScroll 32s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* ============================================================================
+   5. CLASSIC 2D FLAT MODE OVERRIDE & REDUCED MOTION
+   ============================================================================ */
+
+[data-ui-mode='classic'] .card,
+[data-ui-mode='classic'] .card-3d,
+[data-ui-mode='classic'] .btn,
+[data-ui-mode='classic'] .button,
+[data-ui-mode='classic'] .btn-keycap,
+[data-ui-mode='classic'] .btn-primary,
+[data-ui-mode='classic'] .btn-keycap-primary,
+[data-ui-mode='classic'] .depth-well,
+[data-ui-mode='classic'] .iso-stack {
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card-3d,
+  .btn,
+  .button,
+  .btn-keycap,
+  .iso-stack,
+  .animate-marquee {
+    transform: none !important;
+    transition: none !important;
+    animation: none !important;
   }
 }

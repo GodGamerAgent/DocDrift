@@ -4,7 +4,7 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { analyzeLocalDirectory, analyzeSampleRepo } from '@/lib/analyzer';
+import { analyzeLocalDirectory, analyzeSampleRepo, analyzeSampleRepoLive } from '@/lib/analyzer';
 import { SAMPLE_REPOS } from '@/lib/sampleRepos';
 import { loadSettings } from '@/lib/settings';
 
@@ -43,14 +43,19 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { repoUrl, sampleId } = body ?? {};
+    const { repoUrl, sampleId, useLiveModel, docTarget: rawTarget } = body ?? {};
+    const docTarget = rawTarget === 'api' ? 'api' : 'readme';
 
     // 1. If sample repo requested
     if (sampleId !== undefined) {
       if (typeof sampleId !== 'string' || !SAMPLE_REPOS[sampleId]) {
         return NextResponse.json({ error: `Unknown sample repository: ${String(sampleId)}` }, { status: 400 });
       }
-      return NextResponse.json(analyzeSampleRepo(sampleId));
+      const settings = loadSettings();
+      if (useLiveModel) {
+        return NextResponse.json(await analyzeSampleRepoLive(sampleId, settings, docTarget));
+      }
+      return NextResponse.json(analyzeSampleRepo(sampleId, settings, docTarget));
     }
 
     // 2. If GitHub URL requested
@@ -98,7 +103,8 @@ export async function POST(request: Request) {
         cloneDir,
         parsed.repoName,
         `https://github.com/${parsed.repoName}`,
-        settings
+        settings,
+        docTarget
       );
       return NextResponse.json(result);
     } finally {

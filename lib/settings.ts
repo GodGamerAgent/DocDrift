@@ -27,12 +27,15 @@ export function getDefaultSettings(): Settings {
     maxScanDepth: 5,
     maxCodeFiles: 300,
     maxFileSizeKb: 200,
+    enableDiffViewer: true,
+    enableContextTooltips: true,
     checkCliFlags: true,
     checkLinks: true,
     maxLinksToCheck: 40,
     linkTimeoutSec: 8,
     checkSecrets: true,
     checkLicense: true,
+    enableGithubPr: true,
   };
 }
 

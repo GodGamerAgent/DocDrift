@@ -106,7 +106,10 @@ export function checkLicense(readme: string, readmeFile: string, repoPath: strin
   for (const { license, claim } of claimed) {
     if (seenLines.has(claim.index)) continue;
     seenLines.add(claim.index);
-    const fixedLine = claim.isBadge ? null : claim.text.replace(license.mention, actual.name);
+    const badgeSlug = actual.name.replace(/\s+/g, '_').replace(/-/g, '--');
+    const fixedLine = claim.isBadge
+      ? claim.text.replace(license.mention, badgeSlug)
+      : claim.text.replace(license.mention, actual.name);
     drifts.push(
       makeDrift({
         id: `license-mismatch-${claim.index + 1}`,

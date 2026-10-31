@@ -196,6 +196,9 @@ export function auditCliFlags(readme: string, readmeFile: string, codeFiles: Cod
         })
       );
     } else {
+      const cleanedLine = doc.lineText
+        .replace(new RegExp(`\\s+--${doc.flag}(?:\\s+(?!--)[^\\s]+)?(?![\\w-])`, 'g'), '')
+        .trim();
       drifts.push(
         makeDrift({
           id: `cli-removed-${doc.flag}`,
@@ -205,11 +208,13 @@ export function auditCliFlags(readme: string, readmeFile: string, codeFiles: Cod
           docFile: readmeFile,
           docLineRange: `L${doc.line}`,
           codeFile: defined[0].file,
+          codeLineRange: loc(defined[0]),
           codeSnippet: `// No --${doc.flag} option is defined${doc.command ? ` for "${doc.command}"` : ''}`,
           docSnippet: doc.lineText,
           explanation: `The README passes \`--${doc.flag}\`, but no CLI option with that name is defined in the code.`,
           newcomerImpact: `Running the documented command fails with an "unknown option" error.`,
-          suggestedDocFix: `Remove \`--${doc.flag}\` from the command or replace it with the current option.`,
+          suggestedDocFix: cleanedLine && cleanedLine !== doc.lineText ? cleanedLine : `Remove \`--${doc.flag}\` from the command or replace it with the current option.`,
+          fixes: cleanedLine && cleanedLine !== doc.lineText ? [{ type: 'replace', find: doc.lineText, replace: cleanedLine }] : undefined,
         })
       );
     }

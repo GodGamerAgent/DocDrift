@@ -47,11 +47,14 @@ export interface DocHealthMetrics {
   readinessForContributors: 'READY' | 'WARNING' | 'BROKEN';
 }
 
+export type DocTarget = 'readme' | 'api';
+
 export interface RepoAnalysisResult {
   repoName: string;
   repoUrl?: string;
   isSample?: boolean;
   sampleId?: string;
+  docTarget?: DocTarget;
   branch?: string;
   totalFilesScanned: number;
   docsScanned: string[];
@@ -64,7 +67,7 @@ export interface RepoAnalysisResult {
   summary: string;
   // Shown when the model was requested but could not be used
   notice?: string;
-  // Present for cloned repos so the remediation step can patch the actual README
+  // Present for cloned repos so the remediation step can patch the actual README or API Doc
   readmeFile?: string;
   readmeContent?: string;
 }

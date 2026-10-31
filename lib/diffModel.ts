@@ -75,10 +75,11 @@ export function sourceRef(drift: DriftItem): string {
 }
 
 // Which issues explain a change block: matched through their structured fixes,
-// the identifiers they name in `backticks`, or the README text they quote.
+// docLineRange overlap, the identifiers they name in `backticks`, or the README text they quote.
 export function driftsForBlock(block: Extract<DiffBlock, { kind: 'change' }>, drifts: DriftItem[]): DriftItem[] {
   const removed = block.removed.map((l) => l.text);
   const added = block.added.map((l) => l.text);
+  const removedLineNos = block.removed.map((l) => l.oldNo).filter((n): n is number => typeof n === 'number');
   const changed = [...removed, ...added];
   const anyHas = (lines: string[], needle: string) => needle.length >= 3 && lines.some((l) => l.includes(needle));
 
@@ -87,6 +88,17 @@ export function driftsForBlock(block: Extract<DiffBlock, { kind: 'change' }>, dr
       if (fix.type === 'replace' && (anyHas(removed, fix.find) || anyHas(added, fix.replace.trim()))) return true;
       if (fix.type === 'appendToSection' && anyHas(added, fix.line.trim())) return true;
     }
+
+    // Check if the drift's documented line range overlaps with removed lines in this diff block
+    const rangeMatch = drift.docLineRange?.match(/L(\d+)(?:-L?(\d+))?/i);
+    if (rangeMatch && removedLineNos.length > 0) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : start;
+      if (removedLineNos.some((lineNo) => lineNo >= start - 1 && lineNo <= end + 1)) {
+        return true;
+      }
+    }
+
     const named = Array.from(drift.title.matchAll(/`([^`]+)`/g)).map((m) => m[1]);
     if (named.some((n) => anyHas(changed, n))) return true;
 
@@ -97,3 +109,4 @@ export function driftsForBlock(block: Extract<DiffBlock, { kind: 'change' }>, dr
     return suggested.length >= 6 && anyHas(added, suggested);
   });
 }
+

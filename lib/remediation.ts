@@ -4,20 +4,66 @@ import { checkLMStudioHealth, queryGemmaLMStudio } from './lmstudio';
 import { Settings } from './settingsSchema';
 
 function stripOuterFence(text: string): string {
-  const match = text.trim().match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
-  return match ? match[1] : text.trim();
+  const trimmed = text.trim();
+  const exactMatch = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  if (exactMatch) return exactMatch[1];
+  const embeddedMatch = trimmed.match(/^[^\n]{0,120}\n```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i);
+  if (embeddedMatch) return embeddedMatch[1];
+  return trimmed;
 }
 
-// Fixes a drift can be repaired with mechanically. Model-reported env-var drifts carry
-// no structured fixes, so their `NAME=value` suggestions are turned into Usage-style lines.
-function fixesFor(drift: DriftItem): DocFix[] {
+const SECTION_BY_CATEGORY: Record<string, string> = {
+  CLI_FLAG: 'Usage',
+  ENV_VARIABLE: 'Environment Variables',
+  INSTALL_STEP: 'Install',
+  VERSION_MISMATCH: 'Install',
+  FUNCTION_SIGNATURE: 'API',
+  API_ENDPOINT: 'API',
+  LICENSE_MISMATCH: 'License',
+};
+
+// Fixes a drift can be repaired with mechanically. Model-reported drifts carry
+// docSnippet + suggestedDocFix or section additions that can be applied deterministically.
+export function fixesFor(drift: DriftItem, readme = ''): DocFix[] {
   if (drift.fixes?.length) return drift.fixes;
-  if (drift.category !== 'ENV_VARIABLE') return [];
-  return drift.suggestedDocFix
-    .split('\n')
-    .map((line) => line.trim().match(/^([A-Z_][A-Z0-9_]*)=/)?.[1])
-    .filter((name): name is string => !!name)
-    .map((name) => ({ type: 'appendToSection' as const, heading: 'Environment Variables', line: `- \`${name}\`` }));
+
+  if (drift.category === 'ENV_VARIABLE') {
+    const envFixes = drift.suggestedDocFix
+      .split('\n')
+      .map((line) => line.trim().match(/^([A-Z_][A-Z0-9_]*)=/)?.[1])
+      .filter((name): name is string => !!name)
+      .map((name) => ({ type: 'appendToSection' as const, heading: 'Environment Variables', line: `- \`${name}\`` }));
+    if (envFixes.length > 0) return envFixes;
+  }
+
+  const find = drift.docSnippet?.trim();
+  const replace = drift.suggestedDocFix?.trim();
+
+  // 1. Direct snippet replacement when the README contains the outdated snippet
+  if (
+    find &&
+    replace &&
+    find !== replace &&
+    !find.startsWith('//') &&
+    (!readme || readme.includes(find)) &&
+    !/^(remove|update|replace|add|change|delete|ensure|see)\b/i.test(replace)
+  ) {
+    return [{ type: 'replace', find, replace }];
+  }
+
+  // 2. When a model-detected drift reports a missing item (e.g. undocumented CLI flag, version, or API method),
+  // append a clean Markdown bullet or snippet to the corresponding README section so the Side-by-Side Diff Viewer
+  // and "Why it Changed" citation tooltip highlight the exact proposed addition.
+  if (replace) {
+    const heading = SECTION_BY_CATEGORY[drift.category] || 'Documentation Updates';
+    const formattedLine =
+      replace.startsWith('-') || replace.startsWith('#') || replace.startsWith('```')
+        ? replace
+        : `- **${drift.title}**: ${replace}`;
+    return [{ type: 'appendToSection', heading, line: formattedLine }];
+  }
+
+  return [];
 }
 
 function applyRuleBasedFixes(
@@ -28,7 +74,7 @@ function applyRuleBasedFixes(
   let text = readme;
   let fixed = 0;
   for (const drift of drifts) {
-    const result = applyFixes(text, fixesFor(drift));
+    const result = applyFixes(text, fixesFor(drift, text));
     if (result.applied > 0) fixed++;
     text = result.text;
   }
@@ -49,8 +95,17 @@ export async function remediateReadme(
   if (drifts.length === 0) {
     return { fixedReadme: readme, summary: 'No drift found, so there is nothing to fix.' };
   }
+
+  // Always compute surgical deterministic fixes first
+  const ruleResult = applyRuleBasedFixes(readme, drifts);
   if (settings.remediationMode === 'rules') {
-    return applyRuleBasedFixes(readme, drifts);
+    return ruleResult;
+  }
+
+  // In 'auto' mode, if surgical fixes already resolved the detected drifts cleanly, return immediately
+  // so large online READMEs are patched in <5ms without risking truncation from full-document rewrites.
+  if (settings.remediationMode === 'auto' && ruleResult.fixedReadme !== readme) {
+    return ruleResult;
   }
 
   let modelError: string;
@@ -80,13 +135,9 @@ export async function remediateReadme(
         timeoutMs: settings.requestTimeoutSec * 1000,
       });
       const fixedReadme = stripOuterFence(res.content);
-      // Guard against truncated or off-task output replacing the whole README
       if (fixedReadme.length >= readme.length * 0.5) {
-        // Never trust the model to drop a leaked secret: scrub any that survived the rewrite
-        const scrubbed = applyFixes(
-          `${fixedReadme}\n`,
-          drifts.filter((d) => d.category === 'SECRET_LEAK').flatMap((d) => d.fixes ?? [])
-        ).text;
+        const ruleFixes = drifts.flatMap((d) => fixesFor(d, `${fixedReadme}\n`));
+        const scrubbed = applyFixes(`${fixedReadme}\n`, ruleFixes).text;
         return {
           fixedReadme: scrubbed,
           summary: `README rewritten by ${res.model} to resolve ${drifts.length} issue${drifts.length === 1 ? '' : 's'}.`,

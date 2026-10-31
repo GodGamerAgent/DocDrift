@@ -171,10 +171,30 @@ export OPENAI_KEY="sk-proj-abcde1234567890fghij1234567890klmno"
   assert(fixData.fixedReadme.length > 0, 'Fix endpoint must return fixed README');
   console.log('  ✅ Live fix endpoint generated valid unified git patch & remediated README!');
 
-  console.log('\n🎉 ALL 6 FEATURES PASSED 100% END-TO-END VERIFICATION!\n');
+  // Test Gemma 4 model status & live scan
+  console.log('\n▶ [Live Gemma 4] Testing Gemma 4 Cloud Bridge status & live repository scan...');
+  const lmRes = await fetch('http://localhost:3000/api/lmstudio/status');
+  assert(lmRes.ok, 'LM Studio status endpoint must return 200 OK');
+  const lmData = await lmRes.json();
+  assert(lmData.connected === true, 'Model status must report connected');
+  assert(lmData.model.includes('gemma'), `Active model should be Gemma 4 (got ${lmData.model})`);
+  console.log(`  ✅ Model connection active: ${lmData.model} (${lmData.endpoint})`);
+
+  const liveScanRes = await fetch('http://localhost:3000/api/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sampleId: 'cloud-auth-py', useLiveModel: true })
+  });
+  assert(liveScanRes.ok, 'Live Gemma 4 scan must return 200 OK');
+  const liveScanData = await liveScanRes.json();
+  assert(liveScanData.drifts.length >= 4, 'Live Gemma 4 + rule scan must detect CLI, secret, license, and env drifts');
+  console.log(`  ✅ Live Gemma 4 scan (${liveScanData.modelUsed}) returned ${liveScanData.drifts.length} drifts!`);
+
+  console.log('\n🎉 ALL 6 FEATURES + LIVE GEMMA 4 MODEL PASSED 100% END-TO-END VERIFICATION!\n');
 }
 
 runTests().catch(err => {
   console.error('\n❌ Test failed:', err);
   process.exit(1);
 });
+

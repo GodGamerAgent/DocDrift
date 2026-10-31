@@ -26,19 +26,30 @@ export interface Settings {
   maxScanDepth: number;
   maxCodeFiles: number;
   maxFileSizeKb: number;
-  // Extra checks (run on every scan, whichever engine is selected)
+  // Feature & Audit Check Toggles
+  enableDiffViewer: boolean;
+  enableContextTooltips: boolean;
   checkCliFlags: boolean;
   checkLinks: boolean;
   maxLinksToCheck: number;
   linkTimeoutSec: number;
   checkSecrets: boolean;
   checkLicense: boolean;
+  enableGithubPr: boolean;
 }
 
 type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
-type BooleanKey = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings];
+export type BooleanKey = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings];
 
-export const BOOLEAN_KEYS: BooleanKey[] = ['checkCliFlags', 'checkLinks', 'checkSecrets', 'checkLicense'];
+export const BOOLEAN_KEYS: BooleanKey[] = [
+  'enableDiffViewer',
+  'enableContextTooltips',
+  'checkCliFlags',
+  'checkLinks',
+  'checkSecrets',
+  'checkLicense',
+  'enableGithubPr',
+];
 
 export const NUMBER_LIMITS: Record<NumberKey, { min: number; max: number; step: number }> = {
   requestTimeoutSec: { min: 10, max: 3600, step: 10 },
@@ -59,7 +70,7 @@ export const NUMBER_LIMITS: Record<NumberKey, { min: number; max: number; step: 
 
 const MAX_PROMPT_CHARS = 20000;
 
-// Fired on window after settings are saved so the header can re-check the model connection.
+// Fired on window after settings are saved so the header and scanner can refresh immediately.
 export const SETTINGS_SAVED_EVENT = 'docdrift:settings-saved';
 
 // Validates every field of `input`; invalid or missing fields keep the value from `base`.

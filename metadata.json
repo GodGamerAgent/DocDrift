@@ -1,0 +1,8 @@
+{
+  "name": "DocDrift 3D — Autonomous Documentation Auditor",
+  "description": "Find where a repository README no longer matches its code with an interactive 3D side-by-side diff viewer, source context tooltips, CLI flag auditor, dead link & badge scanner, secret & license detector, and one-click GitHub PR creator powered by local LM Studio or Gemma 4.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

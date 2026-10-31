@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { LMStudioStatus } from '@/lib/types';
-import { EngineMode, NUMBER_LIMITS, SETTINGS_SAVED_EVENT, Settings } from '@/lib/settingsSchema';
+import { BooleanKey, EngineMode, NUMBER_LIMITS, SETTINGS_SAVED_EVENT, Settings } from '@/lib/settingsSchema';
 
 type NumberKey = keyof typeof NUMBER_LIMITS;
 
@@ -13,13 +13,15 @@ const ENGINE_LABELS: Record<EngineMode, string> = {
   rules: 'Rules only (no model)',
 };
 
-const Section: React.FC<{ title: string; description: string; children: React.ReactNode }> = ({
+const Section: React.FC<{ code: string; title: string; description: string; children: React.ReactNode }> = ({
+  code,
   title,
   description,
   children,
 }) => (
-  <section className="card p-5">
-    <h2 className="font-medium">{title}</h2>
+  <section className="card-3d p-6">
+    <div className="font-mono text-[11px] text-muted">{code}</div>
+    <h2 className="mt-0.5 text-base font-bold text-fg">{title}</h2>
     <p className="hint mt-0.5">{description}</p>
     <div className="mt-5 grid gap-5 sm:grid-cols-2">{children}</div>
   </section>
@@ -139,18 +141,23 @@ export default function SettingsPage() {
     </div>
   );
 
-  const toggle = (key: 'checkCliFlags' | 'checkLinks' | 'checkSecrets' | 'checkLicense', label: string, hint: string) => (
-    <label className="flex cursor-pointer items-start gap-3 sm:col-span-2">
-      <input
-        id={key}
-        type="checkbox"
-        className="mt-0.5 h-4 w-4 accent-fg"
-        checked={settings[key]}
-        onChange={(e) => update(key, e.target.checked)}
-      />
-      <span>
+  const toggle = (key: BooleanKey, label: string, hint: string) => (
+    <label className="depth-well flex cursor-pointer items-start justify-between gap-4 rounded-xl border border-line bg-bg p-3.5 transition-colors hover:border-accent sm:col-span-2">
+      <span className="min-w-0">
         <span className="label">{label}</span>
         <span className="hint mt-0.5 block">{hint}</span>
+      </span>
+      <span className="flex items-center gap-2 shrink-0 pt-0.5">
+        <span className={`font-mono text-xs font-bold ${settings[key] ? 'text-ok' : 'text-muted'}`}>
+          {settings[key] ? 'ON' : 'OFF'}
+        </span>
+        <input
+          id={key}
+          type="checkbox"
+          className="h-4 w-4 cursor-pointer rounded accent-accent"
+          checked={settings[key]}
+          onChange={(e) => update(key, e.target.checked)}
+        />
       </span>
     </label>
   );
@@ -175,7 +182,7 @@ export default function SettingsPage() {
         onChange={(e) => update(key, e.target.value)}
       />
       {settings[key] !== defaults[key] && (
-        <button className="mt-1 text-xs text-accent hover:underline" onClick={() => update(key, defaults[key])}>
+        <button className="mt-1 text-xs font-semibold text-accent hover:underline" onClick={() => update(key, defaults[key])}>
           Restore default prompt
         </button>
       )}
@@ -188,11 +195,63 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 pb-24">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-muted">Saved on this machine and used for every scan.</p>
+        <h1 className="text-2xl font-extrabold tracking-tight text-fg">Settings &amp; Feature Controls</h1>
+        <p className="mt-1 text-sm text-muted">Toggle individual DocDrift features on or off and configure your model connection.</p>
       </div>
 
-      <Section title="Model connection" description="DocDrift talks to LM Studio's OpenAI-compatible local server.">
+      <Section
+        code="[§01 // FEATURE_&_AUDITOR_TOGGLES]"
+        title="Feature & Audit Check Toggles"
+        description="Enable or disable individual UI workspaces and rule-based auditors across every repository scan."
+      >
+        {toggle(
+          'enableDiffViewer',
+          'Interactive Side-by-Side Diff Viewer',
+          'GitHub-style split screen showing outdated sections in red and proposed fixes in green, with one-click line-by-line accept/reject toggles.'
+        )}
+        {toggle(
+          'enableContextTooltips',
+          'Context Tooltips ("Why it Changed")',
+          'Hover notes over fixes citing the exact source file and line number that triggered the update (e.g., auth.py:42).'
+        )}
+        {toggle(
+          'checkCliFlags',
+          'CLI Flag & Argument Auditor',
+          'Detects removed, renamed, or newly added terminal flags and updates the ## Usage docs.'
+        )}
+        {toggle(
+          'checkLinks',
+          'Dead Link & Broken Badge Scanner',
+          'Flags 404 links, broken image assets, outdated Discord invites, and failed status badges.'
+        )}
+        <Field label="Max external links checked" htmlFor="maxLinksToCheck">
+          {numberInput('maxLinksToCheck', 'links')}
+        </Field>
+        <Field label="Link timeout" htmlFor="linkTimeoutSec">
+          {numberInput('linkTimeoutSec', 'seconds')}
+        </Field>
+        {toggle(
+          'checkSecrets',
+          'Secret Leak Detector',
+          'Catches hardcoded API keys, tokens, or private keys pasted into documentation examples.'
+        )}
+        {toggle(
+          'checkLicense',
+          'License Mismatch Detector',
+          'Ensures the license named in the README matches the root LICENSE file.'
+        )}
+        {toggle(
+          'enableGithubPr',
+          'One-Click GitHub PR Creator',
+          'Connects to GitHub to push accepted updates directly to a new branch and open a ready-to-merge Pull Request.'
+        )}
+      </Section>
+
+      <Section
+        code="[§02 // MODEL_INFERENCE_BRIDGE]"
+        title="Model connection (LM Studio & Gemma 4 Cloud Bridge)"
+        description="Connects to LM Studio locally when running, and automatically uses Gemma 4 (gemma-4-26b-a4b-it) for testing when LM Studio is offline."
+      >
         <Field label="LM Studio endpoint" htmlFor="lmStudioEndpoint" wide>
           <input
             id="lmStudioEndpoint"
@@ -203,25 +262,25 @@ export default function SettingsPage() {
           />
         </Field>
 
-        <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-bg px-3 py-2.5 text-sm">
+        <div className="sm:col-span-2 depth-well flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-bg px-4 py-3 text-sm">
           <span className="flex min-w-0 items-center gap-2">
-            <span className={`h-2 w-2 shrink-0 rounded-full ${status?.connected ? 'bg-ok' : 'bg-muted/50'}`} />
-            <span className="truncate">
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${status?.connected ? 'bg-ok' : 'bg-muted/50'}`} />
+            <span className="truncate font-mono text-xs tabular-nums text-fg">
               {testing
                 ? 'Checking…'
                 : status?.connected
-                ? `Connected · ${status.latencyMs} ms · ${chatModels.length} model${chatModels.length === 1 ? '' : 's'}`
+                ? `Connected (${status.model}) · ${status.latencyMs} ms · ${chatModels.length} model${chatModels.length === 1 ? '' : 's'}`
                 : status?.error || 'Not connected'}
             </span>
           </span>
-          <button className="btn" onClick={testConnection} disabled={testing || saving}>
+          <button className="btn-keycap text-xs" onClick={testConnection} disabled={testing || saving}>
             {dirty ? 'Save & test' : 'Test connection'}
           </button>
         </div>
 
-        <Field label="Model" htmlFor="model" hint="Auto picks the first Gemma model LM Studio lists.">
-          <select id="model" className="input" value={settings.model} onChange={(e) => update('model', e.target.value)}>
-            <option value="">Auto</option>
+        <Field label="Model" htmlFor="model" hint="Auto picks Gemma 4 (gemma-4-26b-a4b-it) or the first Gemma model LM Studio lists.">
+          <select id="model" className="input font-mono text-xs" value={settings.model} onChange={(e) => update('model', e.target.value)}>
+            <option value="">Auto (gemma-4-26b-a4b-it)</option>
             {modelOptions.map((id) => (
               <option key={id} value={id}>
                 {id}
@@ -237,7 +296,7 @@ export default function SettingsPage() {
         </Field>
       </Section>
 
-      <Section title="Drift analysis" description="How the README is compared with the code.">
+      <Section code="[§03 // DRIFT_ANALYSIS_ENGINE]" title="Drift analysis" description="How the README is compared with the code.">
         <Field label="Engine" htmlFor="analysisMode" hint="Model only shows an error instead of falling back." wide>
           {engineSelect('analysisMode')}
         </Field>
@@ -258,8 +317,13 @@ export default function SettingsPage() {
         </Field>
       </Section>
 
-      <Section title="README patch" description="How the fixed README is produced.">
-        <Field label="Engine" htmlFor="remediationMode" hint="Rules can only add missing environment variables." wide>
+      <Section code="[§04 // README_REMEDIATION]" title="README patch" description="How the fixed README is produced.">
+        <Field
+          label="Engine"
+          htmlFor="remediationMode"
+          hint="Rules apply mechanical fixes for CLI flags (## Usage), secrets, licenses, and environment variables."
+          wide
+        >
           {engineSelect('remediationMode')}
         </Field>
         <Field label="Max output tokens" htmlFor="remediationMaxTokens">
@@ -273,7 +337,7 @@ export default function SettingsPage() {
         </Field>
       </Section>
 
-      <Section title="Repository scanning" description="Limits for cloning and reading a repository.">
+      <Section code="[§05 // REPOSITORY_CLONE_LIMITS]" title="Repository scanning" description="Limits for cloning and reading a repository.">
         <Field label="Clone timeout" htmlFor="cloneTimeoutSec">
           {numberInput('cloneTimeoutSec', 'seconds')}
         </Field>
@@ -288,25 +352,13 @@ export default function SettingsPage() {
         </Field>
       </Section>
 
-      <Section title="Extra checks" description="Rule-based checks that run on every scan, alongside the drift analysis.">
-        {toggle('checkCliFlags', 'CLI flags', 'Removed, renamed, required and undocumented flags, with fixes for the Usage section.')}
-        {toggle('checkLinks', 'Links and badges', 'Dead links, missing files and images, expired Discord invites, failing status badges.')}
-        <Field label="Max external links checked" htmlFor="maxLinksToCheck">
-          {numberInput('maxLinksToCheck', 'links')}
-        </Field>
-        <Field label="Link timeout" htmlFor="linkTimeoutSec">
-          {numberInput('linkTimeoutSec', 'seconds')}
-        </Field>
-        {toggle('checkSecrets', 'Secrets', 'API keys, tokens and private keys pasted into the README.')}
-        {toggle('checkLicense', 'License', 'License named in the README matches the LICENSE file.')}
-      </Section>
-
-      <section className="card p-5">
-        <h2 className="font-medium">GitHub</h2>
+      <section className="card-3d p-6">
+        <div className="font-mono text-[11px] text-muted">[§06 // GITHUB_PR_AUTH]</div>
+        <h2 className="mt-0.5 text-base font-bold text-fg">GitHub</h2>
         <p className="hint mt-0.5">Used to open pull requests. DocDrift never stores a token.</p>
-        <div className="mt-4 flex items-center gap-2 rounded-md border border-line bg-bg px-3 py-2.5 text-sm">
-          <span className={`h-2 w-2 shrink-0 rounded-full ${github?.connected ? 'bg-ok' : 'bg-muted/50'}`} />
-          <span>
+        <div className="mt-4 depth-well flex items-center gap-2 rounded-xl border border-line bg-bg px-4 py-3 text-sm">
+          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${github?.connected ? 'bg-ok' : 'bg-muted/50'}`} />
+          <span className="text-fg">
             {!github
               ? 'Checking…'
               : github.connected
@@ -321,24 +373,9 @@ export default function SettingsPage() {
         </p>
       </section>
 
-      <details className="card p-5 text-sm">
-        <summary className="cursor-pointer font-medium">Setting up LM Studio</summary>
-        <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-muted">
-          <li>Download a Gemma model in LM Studio (a 4-bit 12B build fits in 16 GB of RAM).</li>
-          <li>
-            Load it with a <span className="text-fg">context length of 16384 or more</span>. Smaller contexts fail with
-            &ldquo;Context size has been exceeded&rdquo;.
-          </li>
-          <li>
-            Open the Developer tab and start the server (default <code className="font-mono">http://localhost:1234/v1</code>).
-          </li>
-          <li>Run one scan at a time: parallel requests share the model&apos;s context.</li>
-        </ol>
-      </details>
-
       <div className="flex justify-start">
         <button
-          className="text-sm text-muted hover:text-fg"
+          className="btn-keycap text-xs"
           onClick={() => {
             setSettings(defaults);
             setMessage(null);
@@ -348,16 +385,16 @@ export default function SettingsPage() {
         </button>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 border-t border-line bg-bg/95 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-4 py-3">
-          <p className={`text-sm ${message?.kind === 'error' ? 'text-danger' : 'text-muted'}`}>
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-bg/95 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
+          <p className={`text-sm font-semibold ${message?.kind === 'error' ? 'text-danger' : 'text-muted'}`}>
             {message?.text || (dirty ? 'Unsaved changes' : 'All changes saved')}
           </p>
           <div className="flex shrink-0 gap-2">
-            <button className="btn" onClick={() => setSettings(saved)} disabled={!dirty || saving}>
+            <button className="btn-keycap" onClick={() => setSettings(saved)} disabled={!dirty || saving}>
               Discard
             </button>
-            <button className="btn btn-primary" onClick={save} disabled={!dirty || saving}>
+            <button className="btn-keycap btn-keycap-primary" onClick={save} disabled={!dirty || saving}>
               {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
