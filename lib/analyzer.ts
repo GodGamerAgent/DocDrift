@@ -166,9 +166,9 @@ function codeFilePriority(file: string, content: string): number {
   return score - file.split('/').length * 0.1;
 }
 
-function summarize(drifts: DriftItem[], hasDoc: boolean, docLabel = 'README'): string {
-  if (!hasDoc) return `No ${docLabel} found, so there is no documentation to check.`;
-  if (drifts.length === 0) return `The ${docLabel} matches the code. No issues found.`;
+function summarize(drifts: DriftItem[], hasDoc: boolean, docLabel = 'the README'): string {
+  if (!hasDoc) return `No ${docLabel.replace(/^the /, '')} found, so there is no documentation to check.`;
+  if (drifts.length === 0) return `${docLabel[0].toUpperCase()}${docLabel.slice(1)} matches the code. No issues found.`;
   const critical = drifts.filter((d) => d.severity === 'CRITICAL').length;
   return `Found ${drifts.length} issue${drifts.length === 1 ? '' : 's'} in ${docLabel}${critical ? ` (${critical} critical)` : ''}.`;
 }
